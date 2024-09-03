@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -30,8 +31,7 @@ type Response struct {
 // uppercase all char "architecture"
 
 type Config struct {
-	Repository   string `flag:"repo" env:"repo"`
-	Architecture string `flag:"arch" env:"arch"  default:"amd64"`
+	Architecture string `flag:"arch" env:"arch"  default:""`
 	OS           string `flag:"os"   env:"os"`
 	Tag          string `flag:"tag"  env:"tag"`
 }
@@ -44,9 +44,31 @@ func main() {
 	fmt.Fprintf(os.Stderr, `
 _   __   _  
 |   | \  |
-|__ |_/  |
-Latest Docker Image %s    
+|__ |_/  |  %s
+Latest Docker Image    
 `, "v"+Version)
+	repo := ""
+	args := os.Args
+	if len(args) > 1 {
+		repo = args[len(args)-1]
+
+	} else {
+
+		fmt.Fprintln(os.Stderr, `
+No repository not specified
+Usage:
+ ldi [-arch <Architecture>] [-os <Operating Systetem>]  [-tag <tag regex filter>] <Repository>    
+
+example:
+ ldi  -tag '^(\d+)\.(\d+)\.(\d+)$'  grafana/grafana-oss
+`)
+
+		os.Exit(-2)
+	}
+
+	if cfg.Architecture == "" {
+		cfg.Architecture = runtime.GOARCH
+	}
 
 	loader := aconfig.LoaderFor(&cfg, aconfig.Config{
 		SkipFlags:          false,
@@ -60,11 +82,11 @@ Latest Docker Image %s
 		},
 		Files: []string{".env", ".env"},
 	})
+
 	if err := loader.Load(); err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
 
-	repo := cfg.Repository
 	if !strings.Contains(repo, "/") {
 		repo = "library/" + repo
 	}
@@ -125,14 +147,15 @@ Latest Docker Image %s
 	//	sort.Strings(filteredTags)
 
 	// En güncel etiketi al (sonuncu)
+	fmt.Fprintf(os.Stderr, "Repository: %s, Architecture: %s, Tag Filter: %s", repo, cfg.Architecture, cfg.Tag)
 	if len(filteredTags) > 0 {
 		latestTag := filteredTags[len(filteredTags)-1]
 		//fmt.Printf("%s:%s", cfg.Repository, latestTag)
-		fmt.Fprintf(os.Stderr, "Repository: %s, Architecture: %s, Tag Filter: %s, Lates Tag: %s\n", cfg.Repository, cfg.Architecture, cfg.Tag, latestTag)
-		fmt.Fprintf(os.Stdout, "%s:%s", cfg.Repository, latestTag)
+		fmt.Fprintf(os.Stderr, ", Lates Tag: %s\n", latestTag)
+		fmt.Fprintf(os.Stdout, "%s:%s", repo, latestTag)
 
 	} else {
-		os.Exit(1)
+		os.Exit(-1)
 	}
 }
 

@@ -1,14 +1,14 @@
 # Latest Docker Image
 ```
 # usage:
-ldi -repo traefik -tag '^(\d+)\.(\d+)\.(\d+)$'
-ldi -repo golang -tag '-alpine$'
-ldi -repo grafana/grafana-oss -tag '^(\d+)\.(\d+)\.(\d+)$'
+ldi -tag '^(\d+)\.(\d+)\.(\d+)$' traefik
+ldi -tag '-alpine$' golang
+ldi -tag '^(\d+)\.(\d+)\.(\d+)$' grafana/grafana-oss
 
 # pull docker latest images
-docker pull $(ldi -repo traefik -tag '^(\d+)\.(\d+)\.(\d+)$')
-docker pull $(ldi -repo golang -tag -alpine$)
-docker pull $(ldi -repo grafana/grafana-oss -tag '^(\d+)\.(\d+)\.(\d+)$')
+docker pull $(ldi -tag '^(\d+)\.(\d+)\.(\d+)$' traefik)
+docker pull $(ldi -tag -alpine$ golang)
+docker pull $(ldi -tag '^(\d+)\.(\d+)\.(\d+)$' grafana/grafana-oss)
 
 ```
 
