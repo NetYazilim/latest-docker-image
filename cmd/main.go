@@ -41,34 +41,7 @@ var Version = "1.0.0"
 
 func main() {
 
-	fmt.Fprintf(os.Stderr, `
-_   __   _  
-|   | \  |
-|__ |_/  |  %s
-Latest Docker Image    
-`, "v"+Version)
 	repo := ""
-	args := os.Args
-	if len(args) > 1 {
-		repo = args[len(args)-1]
-
-	} else {
-
-		fmt.Fprintln(os.Stderr, `
-No repository not specified
-Usage:
- ldi [-arch <Architecture>] [-os <Operating Systetem>]  [-tag <tag regex filter>] <Repository>    
-
-example:
- ldi  -tag '^(\d+)\.(\d+)\.(\d+)$'  grafana/grafana-oss
-`)
-
-		os.Exit(-2)
-	}
-
-	if cfg.Architecture == "" {
-		cfg.Architecture = runtime.GOARCH
-	}
 
 	loader := aconfig.LoaderFor(&cfg, aconfig.Config{
 		SkipFlags:          false,
@@ -82,9 +55,38 @@ example:
 		},
 		Files: []string{".env", ".env"},
 	})
+	flags := loader.Flags()
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		log.Fatalf("Error: ", err)
+	}
+
+	if len(flags.Args()) == 0 {
+		fmt.Fprintf(os.Stderr, `
+_   __   _  
+|   | \  |
+|__ |_/  |  %s
+Latest Docker Image    
+`, "v"+Version)
+
+		fmt.Fprintln(os.Stderr, `
+No repository not specified
+Usage:
+ ldi [-arch <Architecture>] [-os <Operating Systetem>]  [-tag <tag regex filter>] <Repository>    
+
+example:
+ ldi  -tag '^(\d+)\.(\d+)\.(\d+)$'  grafana/grafana-oss
+`)
+
+		os.Exit(-2)
+	}
+	repo = flags.Args()[0]
 
 	if err := loader.Load(); err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
+	}
+
+	if cfg.Architecture == "" {
+		cfg.Architecture = runtime.GOARCH
 	}
 
 	if !strings.Contains(repo, "/") {
