@@ -109,7 +109,7 @@ example:
 	// Regex deseni tanımla
 	//re := regexp.MustCompile(`-alpine$`)
 	re := regexp.MustCompile(cfg.Tag)
-
+	var msg string
 	var filteredTags []string
 	for _, tag := range response.Results {
 		if !re.MatchString(tag.Name) {
@@ -128,6 +128,7 @@ example:
 			}
 		}
 		if !architectureMatch {
+			msg = fmt.Sprintf("missing %s architecture", cfg.Architecture)
 			continue
 		}
 
@@ -140,6 +141,7 @@ example:
 			}
 		}
 		if !statusMatch {
+			msg = fmt.Sprintf("status: inactive")
 			continue
 		}
 		filteredTags = append(filteredTags, tag.Name)
@@ -157,6 +159,7 @@ example:
 		fmt.Fprintf(os.Stdout, "%s:%s", repo, latestTag)
 
 	} else {
+		fmt.Fprintf(os.Stderr, ", No found %s\n", msg)
 		os.Exit(-1)
 	}
 }
