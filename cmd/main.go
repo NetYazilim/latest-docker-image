@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"github.com/cristalhq/aconfig"
 	"github.com/cristalhq/aconfig/aconfigdotenv"
+	"golang.org/x/mod/semver"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -35,6 +37,9 @@ type Config struct {
 	OS           string `flag:"os"   env:"os"`
 	Tag          string `flag:"tag"  env:"tag"`
 }
+
+// ByVersion implements sort.Interface for sorting semantic version strings.
+type ByVersion []string
 
 var cfg Config
 var Version = "1.1.0"
@@ -93,7 +98,7 @@ example:
 		repo = "library/" + repo
 	}
 
-	url := fmt.Sprintf("https://hub.docker.com/v2/repositories/%s/tags?page_size=250&page=1&ordering=last_updated", repo)
+	url := fmt.Sprintf("https://hub.docker.com/v2/repositories/%s/tags?page_size=100&page=1&ordering=last_updated", repo)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -110,8 +115,8 @@ example:
 	//re := regexp.MustCompile(`-alpine$`)
 	re := regexp.MustCompile(cfg.Tag)
 	var msg string
-	var latestTag string
 
+	var filteredTags []string
 	for _, tag := range response.Results {
 
 		if !re.MatchString(tag.Name) {
@@ -120,19 +125,19 @@ example:
 		if regexp.MustCompile(`beta|rc|latest`).MatchString(tag.Name) {
 			continue
 		}
-		fmt.Printf("Tag: %s ", tag.Name)
+
 		// Mimari kontrolü
 		architectureMatch := false
 		statusMatch := false
 		for _, detail := range tag.Images {
-			fmt.Printf("  Architecture: %s,  Status: %s", detail.Architecture, detail.Status)
+			//		fmt.Printf("  Architecture: %s,  Status: %s", detail.Architecture, detail.Status)
 
 			if regexp.MustCompile(cfg.Architecture).MatchString(detail.Architecture) {
 				architectureMatch = true
-				fmt.Printf("  architectureMatch: %v", architectureMatch)
+
 				if detail.Status == "active" {
 					statusMatch = true
-					fmt.Printf("  statusMatch: %v\n", statusMatch)
+
 					break
 				}
 			}
@@ -149,23 +154,35 @@ example:
 			continue
 		}
 
-		latestTag = tag.Name
-		break
-
+		filteredTags = append(filteredTags, tag.Name)
 	}
 
 	// En güncel etiketi al (sonuncu)
 	fmt.Fprintf(os.Stderr, "Repository: %s, Architecture: %s, Tag Filter: %s", repo, cfg.Architecture, cfg.Tag)
-	if latestTag != "" {
+	if len(filteredTags) > 0 {
+
+		sort.Slice(filteredTags, func(i, j int) bool {
+			v1 := filteredTags[i]
+			v2 := filteredTags[j]
+			if v1[0] != 'v' {
+				v1 = "v" + v1
+			}
+			if v2[0] != 'v' {
+				v2 = "v" + v2
+			}
+
+			return semver.Compare(v1, v2) > 0
+		})
 
 		//fmt.Printf("%s:%s", cfg.Repository, latestTag)
-		fmt.Fprintf(os.Stderr, ", Lates Tag: %s\n", latestTag)
-		fmt.Fprintf(os.Stdout, "%s:%s", repo, latestTag)
+		fmt.Fprintf(os.Stderr, ", Lates Tag: %s\n", filteredTags[0])
+		fmt.Fprintf(os.Stdout, "%s:%s", repo, filteredTags[0])
 
 	} else {
 		fmt.Fprintf(os.Stderr, ", No found %s\n", msg)
 		os.Exit(-1)
 	}
+
 }
 
 // env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o ./bin/latest-docker-image ./cmd
