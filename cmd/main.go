@@ -37,7 +37,7 @@ type Config struct {
 }
 
 var cfg Config
-var Version = "1.0.0"
+var Version = "1.1.0"
 
 func main() {
 
@@ -110,50 +110,54 @@ example:
 	//re := regexp.MustCompile(`-alpine$`)
 	re := regexp.MustCompile(cfg.Tag)
 	var msg string
-	var filteredTags []string
+	var latestTag string
+
 	for _, tag := range response.Results {
+
 		if !re.MatchString(tag.Name) {
 			continue
 		}
 		if regexp.MustCompile(`beta|rc|latest`).MatchString(tag.Name) {
 			continue
 		}
-
+		fmt.Printf("Tag: %s ", tag.Name)
 		// Mimari kontrolü
 		architectureMatch := false
+		statusMatch := false
 		for _, detail := range tag.Images {
+			fmt.Printf("  Architecture: %s,  Status: %s", detail.Architecture, detail.Status)
+
 			if regexp.MustCompile(cfg.Architecture).MatchString(detail.Architecture) {
 				architectureMatch = true
-				break
+				fmt.Printf("  architectureMatch: %v", architectureMatch)
+				if detail.Status == "active" {
+					statusMatch = true
+					fmt.Printf("  statusMatch: %v\n", statusMatch)
+					break
+				}
 			}
 		}
+
 		if !architectureMatch {
 			msg = fmt.Sprintf("missing %s architecture", cfg.Architecture)
 			continue
 		}
-
 		// Active kontrolü
-		statusMatch := false
-		for _, detail := range tag.Images {
-			if detail.Status == "active" {
-				statusMatch = true
-				break
-			}
-		}
+
 		if !statusMatch {
 			msg = fmt.Sprintf("status: inactive")
 			continue
 		}
-		filteredTags = append(filteredTags, tag.Name)
-	}
 
-	// Etiketleri sıralama
-	//	sort.Strings(filteredTags)
+		latestTag = tag.Name
+		break
+
+	}
 
 	// En güncel etiketi al (sonuncu)
 	fmt.Fprintf(os.Stderr, "Repository: %s, Architecture: %s, Tag Filter: %s", repo, cfg.Architecture, cfg.Tag)
-	if len(filteredTags) > 0 {
-		latestTag := filteredTags[len(filteredTags)-1]
+	if latestTag != "" {
+
 		//fmt.Printf("%s:%s", cfg.Repository, latestTag)
 		fmt.Fprintf(os.Stderr, ", Lates Tag: %s\n", latestTag)
 		fmt.Fprintf(os.Stdout, "%s:%s", repo, latestTag)
