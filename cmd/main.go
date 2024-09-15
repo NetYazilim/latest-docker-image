@@ -111,8 +111,6 @@ example:
 		log.Fatalf("Failed to decode JSON response: %v", err)
 	}
 
-	// Regex deseni tanımla
-	//re := regexp.MustCompile(`-alpine$`)
 	re := regexp.MustCompile(cfg.Tag)
 	var msg string
 
@@ -176,7 +174,7 @@ example:
 
 		//fmt.Printf("%s:%s", cfg.Repository, latestTag)
 		fmt.Fprintf(os.Stderr, ", Lates Tag: %s\n", filteredTags[0])
-		fmt.Fprintf(os.Stdout, "%s:%s", repo, filteredTags[0])
+		fmt.Fprintf(os.Stdout, "%s:%s", flags.Args()[0], filteredTags[0])
 
 	} else {
 		fmt.Fprintf(os.Stderr, ", No found %s\n", msg)
