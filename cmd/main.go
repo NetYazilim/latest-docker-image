@@ -27,7 +27,9 @@ type TagDetail struct {
 }
 
 type Response struct {
-	Results []Tag `json:"results"`
+	Count   int    `json:"count"`
+	Next    string `json:"next"`
+	Results []Tag  `json:"results"`
 }
 
 // uppercase all char "architecture"
@@ -42,12 +44,14 @@ type Config struct {
 type ByVersion []string
 
 var cfg Config
-var Version = "1.1.0"
+var Version = "1.2.0"
+var response Response
+var msg string
+var filteredTags []string
 
 func main() {
 
 	repo := ""
-
 	loader := aconfig.LoaderFor(&cfg, aconfig.Config{
 		SkipFlags:          false,
 		AllowUnknownFlags:  false,
@@ -69,9 +73,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, `
 _   __   _  
 |   | \  |
-|__ |_/  |  %s
+|__ |_/  |  v%s
 Latest Docker Image    
-`, "v"+Version)
+`, Version)
 
 		fmt.Fprintln(os.Stderr, `
 No repository not specified
@@ -106,53 +110,74 @@ example:
 	}
 	defer resp.Body.Close()
 
-	var response Response
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		log.Fatalf("Failed to decode JSON response: %v", err)
 	}
 
 	re := regexp.MustCompile(cfg.Tag)
-	var msg string
 
-	var filteredTags []string
-	for _, tag := range response.Results {
+	Count := 0
+	found := false
+	for !found {
 
-		if !re.MatchString(tag.Name) {
-			continue
-		}
-		if regexp.MustCompile(`beta|rc|latest`).MatchString(tag.Name) {
-			continue
-		}
+		for _, tag := range response.Results {
+			Count = Count + 1
+			if !re.MatchString(tag.Name) {
+				continue
+			}
+			if regexp.MustCompile(`beta|rc|latest`).MatchString(tag.Name) {
+				continue
+			}
 
-		// Mimari kontrolü
-		architectureMatch := false
-		statusMatch := false
-		for _, detail := range tag.Images {
-			//		fmt.Printf("  Architecture: %s,  Status: %s", detail.Architecture, detail.Status)
+			// Mimari kontrolü
+			architectureMatch := false
+			statusMatch := false
+			for _, detail := range tag.Images {
+				//		fmt.Printf("  Architecture: %s,  Status: %s", detail.Architecture, detail.Status)
 
-			if regexp.MustCompile(cfg.Architecture).MatchString(detail.Architecture) {
-				architectureMatch = true
+				if regexp.MustCompile(cfg.Architecture).MatchString(detail.Architecture) {
+					architectureMatch = true
 
-				if detail.Status == "active" {
-					statusMatch = true
+					if detail.Status == "active" {
+						statusMatch = true
 
-					break
+						break
+					}
 				}
 			}
+
+			if !architectureMatch {
+				msg = fmt.Sprintf("missing %s architecture", cfg.Architecture)
+				continue
+			}
+			// Active kontrolü
+
+			if !statusMatch {
+				msg = fmt.Sprintf("status: inactive")
+				continue
+			}
+
+			filteredTags = append(filteredTags, tag.Name)
 		}
 
-		if !architectureMatch {
-			msg = fmt.Sprintf("missing %s architecture", cfg.Architecture)
-			continue
+		if len(filteredTags) > 0 {
+			found = true
 		}
-		// Active kontrolü
-
-		if !statusMatch {
-			msg = fmt.Sprintf("status: inactive")
-			continue
+		if Count >= response.Count {
+			break
 		}
 
-		filteredTags = append(filteredTags, tag.Name)
+		url := response.Next
+		resp, err := http.Get(url)
+		if err != nil {
+			log.Fatalf("HTTP request failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			log.Fatalf("Failed to decode JSON response: %v", err)
+		}
+
 	}
 
 	// En güncel etiketi al (sonuncu)
