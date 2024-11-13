@@ -44,7 +44,7 @@ type Config struct {
 type ByVersion []string
 
 var cfg Config
-var Version = "1.2.0"
+var Version = "1.3.0"
 var response Response
 var msg string
 var filteredTags []string
@@ -78,12 +78,17 @@ Latest Docker Image
 `, Version)
 
 		fmt.Fprintln(os.Stderr, `
-No repository not specified
-Usage:
- ldi [-arch <Architecture>] [-os <Operating Systetem>]  [-tag <tag regex filter>] <Repository>    
+Repository name not specified
+Usage:  ldi  [OPTIONS] NAME[:TAG|:REGEX|@DIGEST]    
+
+Options:
+  -arch string    Architecture
+  -os string      Operating Systetem 
 
 example:
- ldi  -tag '^(\d+)\.(\d+)\.(\d+)$'  grafana/grafana-oss
+ ldi grafana/grafana-oss:^(\d+)\.(\d+)\.(\d+)$
+ ldi grafana/grafana-oss:latest
+ ldi portainer/portainer-ee:^(\d+)\.(\d+)\.(\d+)-alpine$
 `)
 
 		os.Exit(-2)
@@ -98,11 +103,16 @@ example:
 		cfg.Architecture = runtime.GOARCH
 	}
 
+	if strings.Contains(repo, ":") {
+		cfg.Tag = strings.Split(repo, ":")[1]
+		repo = strings.Split(repo, ":")[0]
+	}
+	repou := repo
 	if !strings.Contains(repo, "/") {
-		repo = "library/" + repo
+		repou = "library/" + repo
 	}
 
-	url := fmt.Sprintf("https://hub.docker.com/v2/repositories/%s/tags?page_size=100&page=1&ordering=last_updated", repo)
+	url := fmt.Sprintf("https://hub.docker.com/v2/repositories/%s/tags?page_size=100&page=1&ordering=last_updated", repou)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -181,7 +191,7 @@ example:
 	}
 
 	// En güncel etiketi al (sonuncu)
-	fmt.Fprintf(os.Stderr, "Repository: %s, Architecture: %s, Tag Filter: %s", repo, cfg.Architecture, cfg.Tag)
+	fmt.Fprintf(os.Stderr, "\nRepository: %s, Architecture: %s, Tag Filter: %s", repo, cfg.Architecture, cfg.Tag)
 	if len(filteredTags) > 0 {
 
 		sort.Slice(filteredTags, func(i, j int) bool {
@@ -199,7 +209,7 @@ example:
 
 		//fmt.Printf("%s:%s", cfg.Repository, latestTag)
 		fmt.Fprintf(os.Stderr, ", Lates Tag: %s\n", filteredTags[0])
-		fmt.Fprintf(os.Stdout, "%s:%s", flags.Args()[0], filteredTags[0])
+		fmt.Fprintf(os.Stdout, "%s:%s", repo, filteredTags[0])
 
 	} else {
 		fmt.Fprintf(os.Stderr, ", No found %s\n", msg)
