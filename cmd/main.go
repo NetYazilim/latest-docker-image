@@ -23,6 +23,7 @@ type Tag struct {
 
 type TagDetail struct {
 	Architecture string `json:"architecture"`
+	OS           string `json:"os"`
 	Status       string `json:"status"`
 }
 
@@ -35,8 +36,8 @@ type Response struct {
 // uppercase all char "architecture"
 
 type Config struct {
-	Architecture string `flag:"arch" env:"arch"  default:""`
-	OS           string `flag:"os"   env:"os"`
+	Architecture string `flag:"arch" env:"arch" default:""`
+	OS           string `flag:"os"   env:"os"   default:"linux"`
 	Tag          string `flag:"tag"  env:"tag"`
 }
 
@@ -83,7 +84,7 @@ Usage:  ldi  [OPTIONS] NAME[:TAG|:REGEX|@DIGEST]
 
 Options:
   -arch string    Architecture
-  -os string      Operating Systetem 
+  -os string      Operating Systetem, default: linux
 
 example:
  ldi grafana/grafana-oss:^(\d+)\.(\d+)\.(\d+)$
@@ -101,6 +102,10 @@ example:
 
 	if cfg.Architecture == "" {
 		cfg.Architecture = runtime.GOARCH
+	}
+
+	if cfg.OS == "" {
+		cfg.Architecture = "linux"
 	}
 
 	if strings.Contains(repo, ":") {
@@ -138,29 +143,37 @@ example:
 			if regexp.MustCompile(`beta|rc|latest`).MatchString(tag.Name) {
 				continue
 			}
-
+			//fmt.Printf("  tag.Name: %s, %+v \n", tag.Name, tag.Images)
 			// Mimari kontrolü
 			architectureMatch := false
+			OSMatch := false
 			statusMatch := false
 			for _, detail := range tag.Images {
-				//		fmt.Printf("  Architecture: %s,  Status: %s", detail.Architecture, detail.Status)
+				//		fmt.Printf("  Architecture: %s,  OS: %s, Status: %s\n", detail.Architecture, detail.OS, detail.Status)
 
-				if regexp.MustCompile(cfg.Architecture).MatchString(detail.Architecture) {
+				if cfg.Architecture == detail.Architecture {
 					architectureMatch = true
 
-					if detail.Status == "active" {
-						statusMatch = true
+					if cfg.OS == detail.OS {
+						OSMatch = true
 
-						break
+						if detail.Status == "active" {
+							statusMatch = true
+							break
+						}
 					}
 				}
 			}
 
-			if !architectureMatch {
-				msg = fmt.Sprintf("missing %s architecture", cfg.Architecture)
+			if !OSMatch {
+				msg = fmt.Sprintf("missing image for %s OS", cfg.OS)
 				continue
 			}
-			// Active kontrolü
+
+			if !architectureMatch {
+				msg = fmt.Sprintf("missing image for %s architecture", cfg.Architecture)
+				continue
+			}
 
 			if !statusMatch {
 				msg = fmt.Sprintf("status: inactive")
@@ -191,9 +204,9 @@ example:
 	}
 
 	// En güncel etiketi al (sonuncu)
-	fmt.Fprintf(os.Stderr, "\nRepository: %s, Architecture: %s, Tag Filter: %s", repo, cfg.Architecture, cfg.Tag)
-	if len(filteredTags) > 0 {
+	fmt.Fprintf(os.Stderr, "\nRepository: %s, Architecture: %s, OS: %s, Tag Filter: %s", repo, cfg.Architecture, cfg.OS, cfg.Tag)
 
+	if len(filteredTags) > 0 {
 		sort.Slice(filteredTags, func(i, j int) bool {
 			v1 := filteredTags[i]
 			v2 := filteredTags[j]

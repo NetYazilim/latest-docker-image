@@ -5,7 +5,7 @@ Usage:  ldi  [OPTIONS] NAME[:TAG|:REGEX|@DIGEST]
 
 Options:
   -arch string    Architecture
-  -os string      Operating Systetem 
+  -os string      Operating Systetem, default: linux 
 ```
 ### example:
 ```
