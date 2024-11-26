@@ -1,33 +1,42 @@
 # Latest Docker Image
 ### usage:
 ```
-Usage:  ldi  [OPTIONS] NAME[:TAG|:REGEX|@DIGEST]    
+ldi  [OPTIONS] IMAGE[:TAG]    
+Show information about the latest version of a Docker IMAGE in the Docker Hub.
 
 Options:
   -arch string    Architecture
-  -os string      Operating Systetem, default: linux 
+  -os string      Operating Systetem, default: linux
+
+TAG filter options:
+  emty for latest tag
+  regular expression for tag filter
+  @DIGEST for a specific digest
 ```
 ### example:
 ```
-ldi grafana/grafana-oss:^(\d+)\.(\d+)\.(\d+)$
-ldi grafana/grafana-oss:latest
-ldi portainer/portainer-ee:^(\d+)\.(\d+)\.(\d+)-alpine$
+ ldi grafana/grafana-oss
+ ldi grafana/grafana-oss:'(\d+)\.(\d+)\.(\d+)'
+ ldi portainer/portainer-ee:'(\d+)\.(\d+)\.(\d+)-alpine$'
 
-# pull docker latest images
-docker pull $(ldi -tag '^(\d+)\.(\d+)\.(\d+)$' traefik)
-docker pull $(ldi -tag -alpine$ golang)
-docker pull $(ldi -tag '^(\d+)\.(\d+)\.(\d+)$' grafana/grafana-oss)
-
-# pull docker latest image list from file 
-
-image-list.txt content:
-grafana/grafana-oss:^(\d+)\.(\d+)\.(\d+)$
-grafana/grafana-oss:latest
+# use ldi with docker client
+docker pull $(ldi traefik:'(\d+)\.(\d+)\.(\d+)')
+docker pull $(ldi golang:'-alpine$' )
+docker pull $(ldi grafana/grafana-oss:'(\d+)\.(\d+)\.(\d+)')
+```
+## pull docker latest image from list 
+### image-list.txt content:
+```
+traefik # latest tag
+# comment line  
+grafana/grafana-oss:(\d+)\.(\d+)\.(\d+)$
 portainer/portainer-ee:^(\d+)\.(\d+)\.(\d+)-alpine$
-
-script:
+```
+### script:
+```
+# pull.sh
 while IFS= read -r line; do
-    docker pull $(ldi $line)
+    [[ "$line" =~ ^\s*# || -z "$line" ]] && continue
+    docker pull $(ldi "$line")
 done < image-list.txt
-
 ```

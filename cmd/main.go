@@ -13,12 +13,14 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Tag struct {
-	Name string `json:"name"`
-
-	Images []TagDetail `json:"images"`
+	Name        string      `json:"name"`
+	ContentType string      `json:"content_type"`
+	LastUpdated string      `json:"last_updated"`
+	Images      []TagDetail `json:"images"`
 }
 
 type TagDetail struct {
@@ -41,6 +43,11 @@ type Config struct {
 	Tag          string `flag:"tag"  env:"tag"`
 }
 
+type Result struct {
+	Tag         string `flag:"tag"  env:"tag"`
+	LastUpdated string `json:"last_updated"`
+}
+
 // ByVersion implements sort.Interface for sorting semantic version strings.
 type ByVersion []string
 
@@ -48,7 +55,8 @@ var cfg Config
 var Version = "1.3.0"
 var response Response
 var msg string
-var filteredTags []string
+
+var result []Result
 
 func main() {
 
@@ -80,15 +88,21 @@ Latest Docker Image
 
 		fmt.Fprintln(os.Stderr, `
 Repository name not specified
-Usage:  ldi  [OPTIONS] NAME[:TAG|:REGEX|@DIGEST]    
+Usage:  ldi  [OPTIONS] IMAGE[:TAG]    
+Show information about the latest version of a Docker IMAGE in the Docker Hub.
 
 Options:
   -arch string    Architecture
   -os string      Operating Systetem, default: linux
 
+TAG filter options:
+  emty for latest tag
+  regular expression for tag filter
+  @DIGEST for a specific digest
+
 example:
+ ldi grafana/grafana-oss
  ldi grafana/grafana-oss:^(\d+)\.(\d+)\.(\d+)$
- ldi grafana/grafana-oss:latest
  ldi portainer/portainer-ee:^(\d+)\.(\d+)\.(\d+)-alpine$
 `)
 
@@ -133,6 +147,7 @@ example:
 
 	Count := 0
 	found := false
+
 	for !found {
 
 		for _, tag := range response.Results {
@@ -143,49 +158,61 @@ example:
 			if regexp.MustCompile(`beta|rc|latest`).MatchString(tag.Name) {
 				continue
 			}
-			//fmt.Printf("  tag.Name: %s, %+v \n", tag.Name, tag.Images)
+
 			// Mimari kontrolü
 			architectureMatch := false
 			OSMatch := false
 			statusMatch := false
-			for _, detail := range tag.Images {
-				//		fmt.Printf("  Architecture: %s,  OS: %s, Status: %s\n", detail.Architecture, detail.OS, detail.Status)
 
-				if cfg.Architecture == detail.Architecture {
-					architectureMatch = true
+			switch {
+			case tag.ContentType == "plugin":
+				result = append(result, Result{Tag: tag.Name, LastUpdated: tag.LastUpdated})
 
-					if cfg.OS == detail.OS {
-						OSMatch = true
+			case tag.ContentType == "image":
+				for _, detail := range tag.Images {
+					//		fmt.Printf("  Architecture: %s,  OS: %s, Status: %s\n", detail.Architecture, detail.OS, detail.Status)
 
-						if detail.Status == "active" {
-							statusMatch = true
-							break
+					if cfg.Architecture == detail.Architecture {
+						architectureMatch = true
+
+						if cfg.OS == detail.OS {
+							OSMatch = true
+
+							if detail.Status == "active" {
+								statusMatch = true
+								break
+							}
 						}
 					}
 				}
+
+				if !OSMatch {
+					msg = fmt.Sprintf("missing image for %s OS", cfg.OS)
+					continue
+				}
+
+				if !architectureMatch {
+					msg = fmt.Sprintf("missing image for %s architecture", cfg.Architecture)
+					continue
+				}
+
+				if !statusMatch {
+					msg = fmt.Sprintf("status: inactive")
+					continue
+				}
+
+				result = append(result, Result{Tag: tag.Name, LastUpdated: tag.LastUpdated})
+			default:
+				fmt.Fprintf(os.Stderr, ", Unsupported ContentType (%s)\n", tag.ContentType)
+				os.Exit(-1)
 			}
 
-			if !OSMatch {
-				msg = fmt.Sprintf("missing image for %s OS", cfg.OS)
-				continue
-			}
-
-			if !architectureMatch {
-				msg = fmt.Sprintf("missing image for %s architecture", cfg.Architecture)
-				continue
-			}
-
-			if !statusMatch {
-				msg = fmt.Sprintf("status: inactive")
-				continue
-			}
-
-			filteredTags = append(filteredTags, tag.Name)
 		}
 
-		if len(filteredTags) > 0 {
+		if len(result) > 0 {
 			found = true
 		}
+
 		if Count >= response.Count {
 			break
 		}
@@ -203,31 +230,34 @@ example:
 
 	}
 
-	// En güncel etiketi al (sonuncu)
-	fmt.Fprintf(os.Stderr, "\nRepository: %s, Architecture: %s, OS: %s, Tag Filter: %s", repo, cfg.Architecture, cfg.OS, cfg.Tag)
+	fmt.Fprintf(os.Stderr, "\nRepo.: %s, Arch.: %s, OS: %s, Filter: %s", repo, cfg.Architecture, cfg.OS, cfg.Tag)
 
-	if len(filteredTags) > 0 {
-		sort.Slice(filteredTags, func(i, j int) bool {
-			v1 := filteredTags[i]
-			v2 := filteredTags[j]
-			if v1[0] != 'v' {
-				v1 = "v" + v1
-			}
-			if v2[0] != 'v' {
-				v2 = "v" + v2
-			}
-
-			return semver.Compare(v1, v2) > 0
-		})
-
-		//fmt.Printf("%s:%s", cfg.Repository, latestTag)
-		fmt.Fprintf(os.Stderr, ", Lates Tag: %s\n", filteredTags[0])
-		fmt.Fprintf(os.Stdout, "%s:%s", repo, filteredTags[0])
-
-	} else {
+	if len(result) == 0 {
 		fmt.Fprintf(os.Stderr, ", No found %s\n", msg)
 		os.Exit(-1)
+
 	}
+
+	sort.Slice(result, func(i, j int) bool {
+		v1 := result[i].Tag
+		v2 := result[j].Tag
+		if v1[0] != 'v' {
+			v1 = "v" + v1
+		}
+		if v2[0] != 'v' {
+			v2 = "v" + v2
+		}
+
+		return semver.Compare(v1, v2) > 0
+	})
+	lastUpdated := result[0].LastUpdated
+	t, err := time.Parse(time.RFC3339Nano, lastUpdated)
+	if err == nil {
+		lastUpdated = t.Format("2006-01-02 15:04:05Z")
+	}
+
+	fmt.Fprintf(os.Stderr, ", Tag: %s,  Update: %s\n", result[0].Tag, lastUpdated)
+	fmt.Fprintf(os.Stdout, "%s:%s", repo, result[0].Tag)
 
 }
 
