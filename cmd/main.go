@@ -102,8 +102,8 @@ TAG filter options:
 
 example:
  ldi grafana/grafana-oss
- ldi grafana/grafana-oss:^(\d+)\.(\d+)\.(\d+)$
- ldi portainer/portainer-ee:^(\d+)\.(\d+)\.(\d+)-alpine$
+ ldi grafana/grafana-oss:'(\d+)\.(\d+)\.(\d+)'
+ ldi portainer/portainer-ee:'(\d+)\.(\d+)\.(\d+)-alpine$'
 `)
 
 		os.Exit(-2)

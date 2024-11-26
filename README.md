@@ -29,7 +29,7 @@ docker pull $(ldi grafana/grafana-oss:'(\d+)\.(\d+)\.(\d+)')
 ```
 traefik # latest tag
 # comment line  
-grafana/grafana-oss:(\d+)\.(\d+)\.(\d+)$
+grafana/grafana-oss:(\d+)\.(\d+)\.(\d+) 
 portainer/portainer-ee:^(\d+)\.(\d+)\.(\d+)-alpine$
 ```
 ### script:
