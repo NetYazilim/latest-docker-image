@@ -91,7 +91,9 @@ func (p *distPager) Next(ctx context.Context) ([]string, error) {
 		Name string   `json:"name"`
 		Tags []string `json:"tags"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	// The cap is generous rather than tight: gcr.io/distroless/base legitimately
+	// answers with about 14 MB, since it does not paginate at all.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 128<<20)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("%s: could not read the tag list: %w", p.dist.host, err)
 	}
 

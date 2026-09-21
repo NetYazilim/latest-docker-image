@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -99,6 +100,8 @@ func TestExcludeRe(t *testing.T) {
 		// Red Hat source containers.
 		"1780376659-source", "9.0.0-1468-source", "1.0.0-source",
 		"9.0.0-1468.1655190709-source",
+		// cosign artifacts, which make up nearly all of gcr.io/distroless.
+		"sha256-2f1c5e0a.sig", "sha256-2f1c5e0a.att", "sha256-2f1c5e0a.sbom",
 	}
 	kept := []string{
 		"1.0.0", "1.25.1", "11.6.6-security-01", "1.22-alpine", "torch-1.0",
@@ -238,6 +241,86 @@ func TestResolvePrefersLongerPrefix(t *testing.T) {
 	}
 	if got.Tag != "1.2.3-alpine" {
 		t.Errorf("tag = %s, want 1.2.3-alpine", got.Tag)
+	}
+}
+
+// TestResolveStopsAfterEnoughMatches covers the lazy path taken by a driver
+// that cannot order its tags: the candidates are looked up from the top of the
+// sorted list and the walk stops once the best tag and its runner-up are in
+// hand. Every name here compares equal, so the sort is stable and the input
+// order is the lookup order, which keeps the assertion independent of semver.
+func TestResolveStopsAfterEnoughMatches(t *testing.T) {
+	reg := &fakeRegistry{
+		pages:       [][]string{{"aaa", "bbb", "ccc"}},
+		newestFirst: false,
+		info: map[string]TagInfo{
+			"aaa": linuxTag("aaa", "amd64"),
+			"bbb": linuxTag("bbb", "amd64"),
+			"ccc": linuxTag("ccc", "amd64"),
+		},
+	}
+
+	if _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(reg.inspected) != enoughMatches {
+		t.Errorf("inspected %v, want exactly %d lookups", reg.inspected, enoughMatches)
+	}
+	if slices.Contains(reg.inspected, "ccc") {
+		t.Errorf("the third candidate should never have been looked up: %v", reg.inspected)
+	}
+}
+
+// TestResolveInspectsHighestFirst pins the order of those lookups: highest
+// version first, so the answer is usually the first request.
+func TestResolveInspectsHighestFirst(t *testing.T) {
+	reg := &fakeRegistry{
+		pages:       [][]string{{"1.0.0", "3.0.0", "2.0.0"}},
+		newestFirst: false,
+		info: map[string]TagInfo{
+			"1.0.0": linuxTag("1.0.0", "amd64"),
+			"2.0.0": linuxTag("2.0.0", "amd64"),
+			"3.0.0": linuxTag("3.0.0", "amd64"),
+		},
+	}
+
+	got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Tag != "3.0.0" {
+		t.Errorf("tag = %s, want 3.0.0", got.Tag)
+	}
+	if want := []string{"3.0.0", "2.0.0"}; !slices.Equal(reg.inspected, want) {
+		t.Errorf("inspected %v, want %v", reg.inspected, want)
+	}
+}
+
+// TestResolveCapsInspection guards against the gcr.io/distroless case: a
+// repository whose tag list is enormous and whose candidates do not match the
+// requested platform must fail fast with advice, not issue a request per tag.
+func TestResolveCapsInspection(t *testing.T) {
+	var names []string
+	info := map[string]TagInfo{}
+	for i := 0; i < maxInspect+10; i++ {
+		name := fmt.Sprintf("t%03d", i)
+		names = append(names, name)
+		// Published, but never for the platform being asked about.
+		info[name] = linuxTag(name, "s390x")
+	}
+
+	reg := &fakeRegistry{pages: [][]string{names}, newestFirst: false, info: info}
+
+	_, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+	if err == nil {
+		t.Fatal("expected an error once the lookup cap was reached")
+	}
+	if !strings.Contains(err.Error(), "narrow the tag filter") {
+		t.Errorf("error = %q, should tell the user what to do", err)
+	}
+	if len(reg.inspected) != maxInspect {
+		t.Errorf("made %d lookups, want the cap of %d", len(reg.inspected), maxInspect)
 	}
 }
 

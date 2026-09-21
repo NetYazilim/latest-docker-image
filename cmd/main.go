@@ -82,15 +82,18 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	reg := pickRegistry(ref)
 
+	// Printed before the lookup, not after: on a registry with a large tag list
+	// resolve can take a while, and a silent terminal looks like a hung tool.
+	fmt.Fprintf(os.Stderr, "\nRepo.: %s, Arch.: %s, OS: %s, Filter: %s", name, cfg.Architecture, cfg.OS, cfg.Tag)
+
 	info, err := resolve(ctx, reg, repo, filter, cfg.Architecture, cfg.OS)
 	if err != nil && !errors.Is(err, ErrNoMatch) {
 		// No blanket wrapper here: every driver already names itself in its
 		// errors, and a generic "request failed" prefix made an
 		// authentication failure read like a network problem.
+		fmt.Fprintln(os.Stderr)
 		return err
 	}
-
-	fmt.Fprintf(os.Stderr, "\nRepo.: %s, Arch.: %s, OS: %s, Filter: %s", name, cfg.Architecture, cfg.OS, cfg.Tag)
 
 	// On failure stdout must stay EMPTY: otherwise the README's
 	// `docker pull $(ldi ...)` idiom ended up running

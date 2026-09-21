@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -76,9 +77,24 @@ type Registry interface {
 // ErrNoMatch is returned when no tag passed the filters.
 var ErrNoMatch = errors.New("no matching tag found")
 
-// excludeRe drops pre-release and floating tags. The pattern is anchored to
-// separators on purpose: an unbounded `rc` used to silently discard valid tags
-// such as "torch", "arch" and "source".
+const (
+	// enoughMatches is how many platform matches resolve needs before it can
+	// stop looking: the best tag, plus the runner-up the prefix rule may
+	// prefer over it.
+	enoughMatches = 2
+
+	// maxInspect bounds how many candidate tags resolve will look up on a
+	// registry that cannot order them for us, so that a repository with tens of
+	// thousands of tags fails fast with advice instead of issuing one request
+	// per tag. gcr.io/distroless/base answers tags/list with ~14 MB of tags,
+	// which is what this guards against.
+	maxInspect = 50
+)
+
+// excludeRe drops tags that are never the answer: pre-release and floating
+// tags, source containers, and signature or attestation artifacts. The pattern
+// is anchored to separators on purpose: an unbounded `rc` used to silently
+// discard valid tags such as "torch", "arch" and "source".
 //
 // "-source" is excluded as well. Red Hat registries publish a source container
 // beside every image (for example "9.0.0-1468-source") and it is not runnable.
@@ -87,17 +103,35 @@ var ErrNoMatch = errors.New("no matching tag found")
 var excludeRe = regexp.MustCompile(
 	`(?i)(^|[-._])(alpha|beta|rc|pre|preview|dev|snapshot|nightly|canary|edge)([-._0-9]|$)` +
 		`|^latest([-._]|$)` +
-		`|[-._]source$`)
+		`|[-._]source$` +
+		// cosign writes a sha256-<digest>.sig / .att / .sbom tag beside every
+		// image it signs. Those are OCI artifacts, not runnable images, and on
+		// a repository like gcr.io/distroless/base they are almost the entire
+		// tag list.
+		`|\.(sig|att|sbom)$`)
 
 // resolve is the shared selection pipeline: page through the names, filter on
-// the name alone, ask for the platform of the survivors only, sort, and return
-// the best tag. Querying the platform AFTER the name filter is deliberate: on
-// drivers where a lookup is expensive (Distribution) it brings the request
-// count down to the number of candidates.
+// the name alone, ask for the platform of the survivors only, and return the
+// best tag. Querying the platform AFTER the name filter is deliberate, and on a
+// driver where that query costs a request it is also asked for as late and as
+// rarely as possible.
+//
+// The two drivers need different strategies, which is what NewestFirst picks
+// between. A driver that yields the newest tag first can settle each page as it
+// reads it and stop on the page that produced a match - and it only reports
+// NewestFirst because its Inspect is free anyway. A driver returning lexical
+// order knows nothing about which tag is newest, so the candidates are all
+// collected, sorted, and only then looked up from the top down. Inspecting as
+// they arrive instead would cost one request per tag: gcr.io/distroless/base
+// has tens of thousands.
 func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Regexp, arch, osName string) (TagInfo, error) {
 	pager := reg.Tags(repo)
 
-	var matches []TagInfo
+	var (
+		matches    []TagInfo
+		candidates []string
+	)
+
 	for {
 		names, err := pager.Next(ctx)
 		if err != nil {
@@ -107,9 +141,43 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 			break
 		}
 
+		page := make([]string, 0, len(names))
 		for _, name := range names {
-			if !filter.MatchString(name) || excludeRe.MatchString(name) {
-				continue
+			if filter.MatchString(name) && !excludeRe.MatchString(name) {
+				page = append(page, name)
+			}
+		}
+
+		if !reg.NewestFirst() {
+			candidates = append(candidates, page...)
+			continue
+		}
+
+		for _, name := range page {
+			info, err := reg.Inspect(ctx, repo, name)
+			if err != nil {
+				return TagInfo{}, err
+			}
+			if platformMatches(info, arch, osName) {
+				matches = append(matches, info)
+			}
+		}
+		if len(matches) > 0 {
+			break
+		}
+	}
+
+	if !reg.NewestFirst() {
+		sortTagNames(candidates)
+
+		for i, name := range candidates {
+			if len(matches) >= enoughMatches {
+				break
+			}
+			if i >= maxInspect {
+				return TagInfo{}, fmt.Errorf(
+					"%s: looked up %d of %d candidate tags without finding one for %s/%s; narrow the tag filter",
+					reg.Name(), maxInspect, len(candidates), osName, arch)
 			}
 
 			info, err := reg.Inspect(ctx, repo, name)
@@ -119,13 +187,6 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 			if platformMatches(info, arch, osName) {
 				matches = append(matches, info)
 			}
-		}
-
-		// When pages arrive newest-first it is safe to stop at the first
-		// match; for a registry that returns lexical order it would be wrong.
-		// That is why the driver decides.
-		if len(matches) > 0 && reg.NewestFirst() {
-			break
 		}
 	}
 
@@ -168,6 +229,12 @@ func sortTags(tags []TagInfo) {
 	slices.SortFunc(tags, func(a, b TagInfo) int {
 		return compareTags(a.Tag, b.Tag)
 	})
+}
+
+// sortTagNames is sortTags over bare names, for ordering candidates before any
+// of them has been looked up.
+func sortTagNames(names []string) {
+	slices.SortFunc(names, compareTags)
 }
 
 // compareTags returns a negative value when a should come before b. A
