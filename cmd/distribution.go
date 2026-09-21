@@ -3,11 +3,24 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+)
+
+// The tag list has to be read in full, because lexical order says nothing about
+// which tag is newest, so the page count is the whole cost of a lookup:
+// public.ecr.aws/lambda/nodejs has 8825 tags, and at 100 per page that meant 89
+// sequential requests and 43 seconds, with the tag filter making no difference
+// whatsoever. A large page is therefore asked for. The spec lets a registry
+// return fewer than requested, so this is a request and not an assumption; one
+// that rejects the size outright gets a single retry at the modest value.
+const (
+	tagPageSize     = 1000
+	tagPageSizeSafe = 100
 )
 
 // OCI Distribution manifest media types. All of them are asked for together in
@@ -61,10 +74,15 @@ func (d *distribution) NewestFirst() bool { return false }
 
 func (d *distribution) Tags(repo string) TagPager {
 	return &distPager{
-		dist: d,
-		repo: repo,
-		url:  fmt.Sprintf("%s/v2/%s/tags/list?n=100", d.baseURL, repo),
+		dist:  d,
+		repo:  repo,
+		url:   d.tagsURL(repo, tagPageSize),
+		first: true,
 	}
+}
+
+func (d *distribution) tagsURL(repo string, pageSize int) string {
+	return fmt.Sprintf("%s/v2/%s/tags/list?n=%d", d.baseURL, repo, pageSize)
 }
 
 // distPager walks the pages by following the rel="next" link in the Link
@@ -74,6 +92,9 @@ type distPager struct {
 	repo string
 	url  string
 	done bool
+	// first marks the request built here rather than taken from a Link header,
+	// which is the only one whose page size is ours to retry.
+	first bool
 }
 
 func (p *distPager) Next(ctx context.Context) ([]string, error) {
@@ -82,10 +103,17 @@ func (p *distPager) Next(ctx context.Context) ([]string, error) {
 	}
 
 	resp, err := p.dist.get(ctx, p.repo, p.url, "application/json")
+	if err != nil && p.first && isBadRequest(err) {
+		// The registry refused the page size. Ask for the modest one rather
+		// than failing the whole lookup over an optimisation.
+		p.url = p.dist.tagsURL(p.repo, tagPageSizeSafe)
+		resp, err = p.dist.get(ctx, p.repo, p.url, "application/json")
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	p.first = false
 
 	var body struct {
 		Name string   `json:"name"`
@@ -312,21 +340,40 @@ func (d *distribution) fetchToken(ctx context.Context, repo, challenge string) (
 	return "", fmt.Errorf("%s: the token response was empty", d.host)
 }
 
+// statusError carries the HTTP status alongside the message, so a caller can
+// react to the code instead of parsing prose.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+// isBadRequest reports whether err came back as HTTP 400.
+func isBadRequest(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && se.code == http.StatusBadRequest
+}
+
 // statusError turns the registry's status code into a message worth reading.
 func (d *distribution) statusError(code int, body []byte) error {
+	return &statusError{code: code, msg: d.statusMessage(code, body)}
+}
+
+func (d *distribution) statusMessage(code int, body []byte) string {
 	switch code {
 	case http.StatusUnauthorized:
-		return fmt.Errorf("%s: authentication required; this registry is closed to anonymous access%s", d.host, ociDetail(body))
+		return fmt.Sprintf("%s: authentication required; this registry is closed to anonymous access%s", d.host, ociDetail(body))
 	case http.StatusForbidden:
-		return fmt.Errorf("%s: access denied; a subscription or entitlement may be required%s", d.host, ociDetail(body))
+		return fmt.Sprintf("%s: access denied; a subscription or entitlement may be required%s", d.host, ociDetail(body))
 	case http.StatusNotFound:
 		// Registries deliberately conflate "does not exist" with "you cannot
 		// see it", to avoid leaking; the message says so.
-		return fmt.Errorf("%s: repository not found (it may not exist, or you may not be allowed to see it)%s", d.host, ociDetail(body))
+		return fmt.Sprintf("%s: repository not found (it may not exist, or you may not be allowed to see it)%s", d.host, ociDetail(body))
 	case http.StatusTooManyRequests:
-		return fmt.Errorf("%s: rate limit exceeded%s", d.host, ociDetail(body))
+		return fmt.Sprintf("%s: rate limit exceeded%s", d.host, ociDetail(body))
 	}
-	return fmt.Errorf("%s: unexpected response (HTTP %d)%s", d.host, code, ociDetail(body))
+	return fmt.Sprintf("%s: unexpected response (HTTP %d)%s", d.host, code, ociDetail(body))
 }
 
 // ociDetail returns the first description in an OCI error body as " - message".

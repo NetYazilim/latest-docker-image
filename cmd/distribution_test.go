@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -75,7 +76,10 @@ func (f *fakeRegistryServer) count(path string) int {
 }
 
 func TestDistributionTokenAndPagination(t *testing.T) {
+	var sizes []string
+
 	d, f := newFakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		sizes = append(sizes, r.URL.Query().Get("n"))
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("last") == "" {
 			// A relative Link address: the driver must resolve it against the
@@ -113,6 +117,66 @@ func TestDistributionTokenAndPagination(t *testing.T) {
 	// The token must be taken once and cached, not fetched per request.
 	if f.tokens != 1 {
 		t.Errorf("token endpoint was called %d times, want 1", f.tokens)
+	}
+
+	// The first request must ask for the large page: the page count is the
+	// whole cost of a lookup on this driver.
+	if sizes[0] != fmt.Sprint(tagPageSize) {
+		t.Errorf("first page asked for n=%s, want %d", sizes[0], tagPageSize)
+	}
+}
+
+// TestDistributionRetriesSmallerPage covers a registry that refuses the large
+// page size: one retry at the modest value beats failing the lookup over an
+// optimisation.
+func TestDistributionRetriesSmallerPage(t *testing.T) {
+	var sizes []string
+
+	d, _ := newFakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		n := r.URL.Query().Get("n")
+		sizes = append(sizes, n)
+
+		if n == fmt.Sprint(tagPageSize) {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"errors":[{"code":"INVALID","message":"n too large"}]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"name":"x/y","tags":["1.0.0"]}`)
+	})
+
+	page, err := d.Tags("x/y").Next(context.Background())
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if len(page) != 1 || page[0] != "1.0.0" {
+		t.Errorf("page = %v, want [1.0.0]", page)
+	}
+	if want := []string{fmt.Sprint(tagPageSize), fmt.Sprint(tagPageSizeSafe)}; !slices.Equal(sizes, want) {
+		t.Errorf("page sizes asked for = %v, want %v", sizes, want)
+	}
+}
+
+// TestDistributionKeepsOtherStatusErrors: only 400 earns the retry, and the
+// status has to survive alongside the message.
+func TestDistributionKeepsOtherStatusErrors(t *testing.T) {
+	var calls int
+
+	d, _ := newFakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"errors":[{"code":"NAME_UNKNOWN","message":"repository not found"}]}`)
+	})
+
+	_, err := d.Tags("x/y").Next(context.Background())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if isBadRequest(err) {
+		t.Error("a 404 must not be reported as a bad request")
+	}
+	if calls != 1 {
+		t.Errorf("made %d requests, want 1 with no retry", calls)
 	}
 }
 
