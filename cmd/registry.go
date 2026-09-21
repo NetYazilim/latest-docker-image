@@ -62,7 +62,12 @@ type Registry interface {
 	Name() string
 
 	// Tags returns a reader that pages through the repository's tag names.
-	Tags(repo string) TagPager
+	//
+	// prefix, when not empty, is a literal string every matching tag begins
+	// with. A driver may use it to fetch less: OCI Distribution returns tags in
+	// lexical order, so it can start the listing at that prefix. Ignoring it is
+	// always correct.
+	Tags(repo, prefix string) TagPager
 
 	// Inspect reports platform and date detail for a single tag. It may hit
 	// the network, so resolve only calls it for tags that passed the name
@@ -207,9 +212,43 @@ var excludeRe = regexp.MustCompile(
 // they arrive instead would cost one request per tag: gcr.io/distroless/base
 // has tens of thousands.
 func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Regexp, arch, osName string) (TagInfo, lookupStats, error) {
+	prefix := anchoredPrefix(filter)
+
+	info, st, err := lookup(ctx, reg, repo, filter, arch, osName, prefix)
+	if prefix == "" || st.Candidates > 0 {
+		return info, st, err
+	}
+
+	// The skip produced no candidate at all. Either the repository genuinely has
+	// no matching tag, or this registry does not order tags the way the skip
+	// assumes. Reading the whole list settles it, and only costs anything in
+	// the case that was going to fail anyway.
+	full, fullSt, fullErr := lookup(ctx, reg, repo, filter, arch, osName, "")
+	fullSt.Pages += st.Pages
+	fullSt.Tags += st.Tags
+	fullSt.Lookups += st.Lookups
+	return full, fullSt, fullErr
+}
+
+// anchoredPrefix returns the literal string every matching tag must start with,
+// or "" when the filter does not pin one down. The pattern has to be anchored:
+// an unanchored literal can match anywhere in a tag, so it says nothing about
+// where the tag begins, and a skip based on it would miss matches.
+//
+// Note that an unescaped dot costs precision here - "^22.2026" yields "22",
+// where "^22\.2026" yields "22.2026" and reads far less of the list.
+func anchoredPrefix(filter *regexp.Regexp) string {
+	if !strings.HasPrefix(filter.String(), "^") {
+		return ""
+	}
+	prefix, _ := filter.LiteralPrefix()
+	return prefix
+}
+
+func lookup(ctx context.Context, reg Registry, repo string, filter *regexp.Regexp, arch, osName, prefix string) (TagInfo, lookupStats, error) {
 	var st lookupStats
 
-	pager := reg.Tags(repo)
+	pager := reg.Tags(repo, prefix)
 
 	// A filter naming one tag outright is a request for that tag, not a query
 	// to be second-guessed.

@@ -92,7 +92,7 @@ func TestDistributionTokenAndPagination(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	pager := d.Tags("x/y")
+	pager := d.Tags("x/y", "")
 
 	first, err := pager.Next(ctx)
 	if err != nil {
@@ -145,7 +145,7 @@ func TestDistributionRetriesSmallerPage(t *testing.T) {
 		fmt.Fprint(w, `{"name":"x/y","tags":["1.0.0"]}`)
 	})
 
-	page, err := d.Tags("x/y").Next(context.Background())
+	page, err := d.Tags("x/y", "").Next(context.Background())
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestDistributionKeepsOtherStatusErrors(t *testing.T) {
 		fmt.Fprint(w, `{"errors":[{"code":"NAME_UNKNOWN","message":"repository not found"}]}`)
 	})
 
-	_, err := d.Tags("x/y").Next(context.Background())
+	_, err := d.Tags("x/y", "").Next(context.Background())
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -291,7 +291,7 @@ func TestDistributionEmptyTagList(t *testing.T) {
 		fmt.Fprint(w, `{"name":"x/y","tags":null}`)
 	})
 
-	page, err := d.Tags("x/y").Next(context.Background())
+	page, err := d.Tags("x/y", "").Next(context.Background())
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestDistributionStatusErrors(t *testing.T) {
 				fmt.Fprint(w, tc.body)
 			})
 
-			_, err := d.Tags("x/y").Next(context.Background())
+			_, err := d.Tags("x/y", "").Next(context.Background())
 			if err == nil {
 				t.Fatalf("expected an error for HTTP %d", tc.status)
 			}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -72,26 +73,38 @@ func (d *distribution) Name() string { return d.host }
 // cannot stop early; the whole list has to be scanned.
 func (d *distribution) NewestFirst() bool { return false }
 
-func (d *distribution) Tags(repo string) TagPager {
+// Tags starts the listing at prefix when one is given. Tags arrive in lexical
+// order, and "last=22." is strictly before "22.0", so the whole block that can
+// match is still returned while everything below it is skipped. That is the
+// only lever left on this driver: the cost of a lookup tracks the number of
+// tags read, not the number of requests - public.ecr.aws answered 8825 tags in
+// 43s over 89 pages and 28.8s over 9, about 3ms a tag either way.
+func (d *distribution) Tags(repo, prefix string) TagPager {
 	return &distPager{
-		dist:  d,
-		repo:  repo,
-		url:   d.tagsURL(repo, tagPageSize),
-		first: true,
+		dist:   d,
+		repo:   repo,
+		prefix: prefix,
+		url:    d.tagsURL(repo, tagPageSize, prefix),
+		first:  true,
 	}
 }
 
-func (d *distribution) tagsURL(repo string, pageSize int) string {
-	return fmt.Sprintf("%s/v2/%s/tags/list?n=%d", d.baseURL, repo, pageSize)
+func (d *distribution) tagsURL(repo string, pageSize int, prefix string) string {
+	q := url.Values{"n": {strconv.Itoa(pageSize)}}
+	if prefix != "" {
+		q.Set("last", prefix)
+	}
+	return fmt.Sprintf("%s/v2/%s/tags/list?%s", d.baseURL, repo, q.Encode())
 }
 
 // distPager walks the pages by following the rel="next" link in the Link
 // header.
 type distPager struct {
-	dist *distribution
-	repo string
-	url  string
-	done bool
+	dist   *distribution
+	repo   string
+	prefix string
+	url    string
+	done   bool
 	// first marks the request built here rather than taken from a Link header,
 	// which is the only one whose page size is ours to retry.
 	first bool
@@ -106,7 +119,7 @@ func (p *distPager) Next(ctx context.Context) ([]string, error) {
 	if err != nil && p.first && isBadRequest(err) {
 		// The registry refused the page size. Ask for the modest one rather
 		// than failing the whole lookup over an optimisation.
-		p.url = p.dist.tagsURL(p.repo, tagPageSizeSafe)
+		p.url = p.dist.tagsURL(p.repo, tagPageSizeSafe, p.prefix)
 		resp, err = p.dist.get(ctx, p.repo, p.url, "application/json")
 	}
 	if err != nil {

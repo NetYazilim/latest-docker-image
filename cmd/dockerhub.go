@@ -60,7 +60,10 @@ func (h *dockerHub) Name() string { return "docker hub" }
 // the newest tags.
 func (h *dockerHub) NewestFirst() bool { return true }
 
-func (h *dockerHub) Tags(repo string) TagPager {
+// Tags ignores the prefix: this API has its own server-side substring filter,
+// which requiredLiteral already feeds and which accepts a literal from anywhere
+// in the pattern rather than only the start.
+func (h *dockerHub) Tags(repo, _ string) TagPager {
 	// On Docker Hub a single-component name lives in the "library" namespace.
 	if !strings.Contains(repo, "/") {
 		repo = "library/" + repo

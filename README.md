@@ -83,7 +83,16 @@ or the tree is dirty (`v1.7.0`, `v1.7.0-3-gabc1234-dirty`). A plain
   `'(\d+)\.(\d+)\.(\d+)-alpine$'` for the variant.
 - **Pin the major version to stay on a release line.**
   `'^2\.(\d+)\.(\d+)$'` tracks 2.x.x and never follows the repository to
-  3.x. Escape the dot: `'^2.(\d+)'` would also match `2X5`.
+  3.x.
+- **Anchor with `^` and escape the dots - on a large repository it is also the
+  difference between seconds and half a minute.** Where a registry orders tags
+  lexically, an anchored filter lets ldi start the listing at the literal it
+  begins with and skip everything below. `'^22\.2026\.09\.(\d+)\.(\d+)$'`
+  reads a handful of tags; `'^22.2026.09\.(\d+)\.(\d+)$'`, where the first
+  dots are still metacharacters, can only skip to `22`; and an unanchored
+  filter reads the whole list, because a literal that may appear anywhere in a
+  tag says nothing about where the tag starts. `-verbose` reports how many tags
+  a lookup actually read.
 - Pre-release and floating tags are always skipped: `alpha`, `beta`, `rc`,
   `pre`, `preview`, `dev`, `snapshot`, `nightly`, `canary`, `edge` (as a
   `-`/`.`/`_` separated part of the tag) and `latest`. Tags ending in

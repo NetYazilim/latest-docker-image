@@ -37,7 +37,7 @@ func TestHubPagerFollowsNext(t *testing.T) {
 	hub := newDockerHub("")
 	hub.baseURL = srv.URL
 
-	pager := hub.Tags("traefik")
+	pager := hub.Tags("traefik", "")
 
 	first, err := pager.Next(ctx)
 	if err != nil {
@@ -116,7 +116,7 @@ func TestHubFetchSurfacesAPIMessage(t *testing.T) {
 	hub := newDockerHub("")
 	hub.baseURL = srv.URL
 
-	_, err := hub.Tags("x/y").Next(context.Background())
+	_, err := hub.Tags("x/y", "").Next(context.Background())
 	if err == nil {
 		t.Fatal("expected an error for 404")
 	}
