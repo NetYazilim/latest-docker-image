@@ -121,6 +121,76 @@ func TestExcludeRe(t *testing.T) {
 	}
 }
 
+func TestCompareTags(t *testing.T) {
+	// Each pair is {higher, lower}: the first must sort before the second.
+	pairs := [][2]string{
+		// Numeric, not lexical.
+		{"1.10.0", "1.9.0"},
+		{"9.8", "9.6"},
+		{"v2.63.23", "v2.63.9"},
+		// A leading zero in a segment, which semver rejects outright.
+		{"26.04", "24.04"},
+		{"24.04", "22.04"},
+		// More than three segments, as public.ecr.aws/lambda/nodejs publishes.
+		{"22.2025.04.24.11", "22.2024.12.01.03"},
+		{"22.2026.01.02.03", "22.2025.04.24.11"},
+		{"22.2025.04.24.11", "22.2025.04.24.09"},
+		// A plain release outranks a suffixed build of the same version.
+		{"1.2.3", "1.2.3-alpine"},
+		{"3.7.8", "3.7.8-amd64"},
+		// Except a security rebuild, which supersedes it.
+		{"11.6.6-security-01", "11.6.6"},
+		{"11.6.6-security-02", "11.6.6-security-01"},
+		// A higher version wins even when the lower one is plain.
+		{"1.26.0-alpine", "1.25.1"},
+	}
+
+	for _, p := range pairs {
+		if c := compareTags(p[0], p[1]); c >= 0 {
+			t.Errorf("compareTags(%q, %q) = %d, want negative", p[0], p[1], c)
+		}
+		if c := compareTags(p[1], p[0]); c <= 0 {
+			t.Errorf("compareTags(%q, %q) = %d, want positive", p[1], p[0], c)
+		}
+	}
+
+	// 1.2 and 1.2.0 are the same version; a missing segment counts as zero.
+	for _, same := range [][2]string{{"1.2", "1.2.0"}, {"v1.2.0", "1.2"}, {"1.0.0", "1"}} {
+		if c := compareTags(same[0], same[1]); c != 0 {
+			t.Errorf("compareTags(%q, %q) = %d, want 0", same[0], same[1], c)
+		}
+	}
+}
+
+func TestSplitTag(t *testing.T) {
+	tests := []struct {
+		tag    string
+		core   []int
+		suffix string
+	}{
+		{"1.37.1", []int{1, 37, 1}, ""},
+		{"v1.37.1-alpine", []int{1, 37, 1}, "-alpine"},
+		{"24.04", []int{24, 4}, ""},
+		{"22.2025.04.24.11", []int{22, 2025, 4, 24, 11}, ""},
+		{"9.2-696", []int{9, 2}, "-696"},
+		{"1.0.0+build.5", []int{1, 0, 0}, "+build.5"},
+		// Not version-shaped: no core, so such tags keep their order.
+		{"latest", nil, ""},
+		{"0093a0209f695c939427fd207c933bdbadcf7301", nil, ""},
+		{"nonroot", nil, ""},
+	}
+
+	for _, tc := range tests {
+		core, suffix := splitTag(tc.tag)
+		if !slices.Equal(core, tc.core) {
+			t.Errorf("splitTag(%q) core = %v, want %v", tc.tag, core, tc.core)
+		}
+		if suffix != tc.suffix {
+			t.Errorf("splitTag(%q) suffix = %q, want %q", tc.tag, suffix, tc.suffix)
+		}
+	}
+}
+
 func TestSortTags(t *testing.T) {
 	tags := []TagInfo{
 		{Tag: "1.0.0"},

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -349,45 +350,96 @@ func sortTagNames(names []string) {
 	slices.SortFunc(names, compareTags)
 }
 
-// compareTags returns a negative value when a should come before b. A
-// -security- rebuild of the same base version wins over the plain release.
+// compareTags returns a negative value when a should come before b.
+//
+// The numeric core is compared segment by segment as integers rather than
+// through semver, because semver cannot parse much of what registries publish:
+// more than three segments (public.ecr.aws/lambda/nodejs tags look like
+// 22.2025.04.24.11) or a leading zero inside one (ubuntu 24.04). It returned 0
+// for every such pair, which left those tags in whatever order the registry
+// happened to list them - and on Docker Hub the answer only came out right
+// because sortTags falls back to the date. For a core semver can parse the two
+// agree, so nothing that already worked moves.
 func compareTags(a, b string) int {
-	v1 := a
-	if !strings.HasPrefix(v1, "v") {
-		v1 = "v" + v1
-	}
-	v2 := b
-	if !strings.HasPrefix(v2, "v") {
-		v2 = "v" + v2
+	coreA, suffixA := splitTag(a)
+	coreB, suffixB := splitTag(b)
+
+	if c := compareSegments(coreA, coreB); c != 0 {
+		return -c
 	}
 
-	isSec1 := strings.Contains(v1, "security")
-	isSec2 := strings.Contains(v2, "security")
+	// Same version: a -security- rebuild supersedes the plain release.
+	secA := strings.Contains(a, "security")
+	secB := strings.Contains(b, "security")
+	if secA != secB {
+		if secA {
+			return -1
+		}
+		return 1
+	}
 
-	if isSec1 != isSec2 {
-		base1 := getBaseVersion(v1)
-		base2 := getBaseVersion(v2)
-		if base1 == base2 {
-			if isSec1 {
+	// Otherwise the plain release outranks a suffixed build of it, which is what
+	// keeps 3.7.8 ahead of 3.7.8-amd64.
+	switch {
+	case suffixA == "" && suffixB != "":
+		return -1
+	case suffixA != "" && suffixB == "":
+		return 1
+	case suffixA == suffixB:
+		return 0
+	}
+
+	// Both carry a suffix. semver orders real pre-releases properly; where it
+	// cannot parse them, the later suffix comes first.
+	if c := semver.Compare("v"+a, "v"+b); c != 0 {
+		return -c
+	}
+	return strings.Compare(suffixB, suffixA)
+}
+
+// splitTag separates a tag into its numeric segments and whatever follows them:
+// "v1.37.1-alpine" becomes [1 37 1] and "-alpine". A non-numeric segment yields
+// no core at all, so tags that are not version-shaped compare as equal and keep
+// their order.
+func splitTag(tag string) ([]int, string) {
+	s := strings.TrimPrefix(tag, "v")
+
+	core, suffix := s, ""
+	if i := strings.IndexAny(s, "-+"); i != -1 {
+		core, suffix = s[:i], s[i:]
+	}
+
+	var segments []int
+	for _, part := range strings.Split(core, ".") {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, suffix
+		}
+		segments = append(segments, n)
+	}
+	return segments, suffix
+}
+
+// compareSegments compares two segment lists numerically, treating a missing
+// segment as zero so that 1.2 and 1.2.0 are the same version. Numeric beats
+// lexical here: 1.10.0 is above 1.9.0.
+func compareSegments(a, b []int) int {
+	for i := 0; i < len(a) || i < len(b); i++ {
+		x, y := 0, 0
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x != y {
+			if x < y {
 				return -1
 			}
 			return 1
 		}
 	}
-	return -semver.Compare(v1, v2)
-}
-
-// getBaseVersion returns the canonical base version without any pre-release
-// or build metadata. Example: "v13.0.1-security-01" -> "v13.0.1".
-func getBaseVersion(v string) string {
-	c := semver.Canonical(v)
-	if c == "" {
-		c = v
-	}
-	if idx := strings.IndexAny(c, "-+"); idx != -1 {
-		return c[:idx]
-	}
-	return c
+	return 0
 }
 
 // Reference material for further registry work:
