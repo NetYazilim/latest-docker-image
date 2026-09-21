@@ -21,8 +21,11 @@ type Config struct {
 }
 
 var (
-	cfg     Config
-	Version = "1.6.0"
+	cfg Config
+	// Version is stamped in at link time by build.sh
+	// (-ldflags "-X main.Version=..."). A plain `go build` leaves it at
+	// "dev": it has no way to know a release number.
+	Version = "dev"
 )
 
 func main() {
