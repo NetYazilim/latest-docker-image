@@ -21,23 +21,12 @@ type fakeRegistry struct {
 
 	pagesRead int
 	inspected []string
-	// prefixes records what each Tags call was asked to skip to.
-	prefixes []string
-	// emptyForPrefix makes a skipped listing come back empty, standing in for a
-	// registry whose ordering the skip cannot rely on.
-	emptyForPrefix bool
 }
 
 func (f *fakeRegistry) Name() string      { return "fake" }
 func (f *fakeRegistry) NewestFirst() bool { return f.newestFirst }
 
-func (f *fakeRegistry) Tags(_, prefix string) TagPager {
-	f.prefixes = append(f.prefixes, prefix)
-	if prefix != "" && f.emptyForPrefix {
-		return &fakePager{reg: f, empty: true}
-	}
-	return &fakePager{reg: f}
-}
+func (f *fakeRegistry) Tags(string) TagPager { return &fakePager{reg: f} }
 
 func (f *fakeRegistry) Inspect(_ context.Context, _, tag string) (TagInfo, error) {
 	f.inspected = append(f.inspected, tag)
@@ -49,15 +38,11 @@ func (f *fakeRegistry) Inspect(_ context.Context, _, tag string) (TagInfo, error
 }
 
 type fakePager struct {
-	reg   *fakeRegistry
-	i     int
-	empty bool
+	reg *fakeRegistry
+	i   int
 }
 
 func (p *fakePager) Next(context.Context) ([]string, error) {
-	if p.empty {
-		return nil, nil
-	}
 	if p.i >= len(p.reg.pages) {
 		return nil, nil
 	}
@@ -641,86 +626,6 @@ func TestResolveReportsStats(t *testing.T) {
 	want := lookupStats{Pages: 2, Tags: 5, Candidates: 3, Lookups: 1}
 	if st != want {
 		t.Errorf("stats = %+v, want %+v", st, want)
-	}
-}
-
-func TestAnchoredPrefix(t *testing.T) {
-	tests := []struct {
-		pattern string
-		want    string
-	}{
-		{`^22\.2026\.09\.(\d+)\.(\d+)$`, "22.2026.09."},
-		{`^9\.[0-9]+$`, "9."},
-		{`^v(\d+)\.(\d+)\.(\d+)$`, "v"},
-		// A complete literal names the tag itself, and last= is exclusive, so
-		// the skip has to stop one character short of it.
-		{`^latest$`, "lates"},
-		{`^9$`, ""},
-		// An unescaped dot is a metacharacter, so the prefix stops before it.
-		// That costs precision, and now it costs speed too.
-		{`^22.2026.09\.(\d+)$`, "22"},
-		// Unanchored: a literal can match anywhere in the tag, so it says
-		// nothing about where the tag starts.
-		{`(\d+)\.(\d+)\.(\d+)$`, ""},
-		{`-alpine$`, ""},
-		{`22\.2026`, ""},
-		{"", ""},
-		{`^(\d+)\.(\d+)$`, ""},
-	}
-
-	for _, tc := range tests {
-		if got := anchoredPrefix(regexp.MustCompile(tc.pattern)); got != tc.want {
-			t.Errorf("anchoredPrefix(%q) = %q, want %q", tc.pattern, got, tc.want)
-		}
-	}
-}
-
-// TestResolvePassesPrefixToDriver: an anchored filter has to reach the driver,
-// which is what lets it read a slice of the tag list instead of all of it.
-func TestResolvePassesPrefixToDriver(t *testing.T) {
-	reg := &fakeRegistry{
-		pages:       [][]string{{"9.8"}},
-		newestFirst: false,
-		info:        map[string]TagInfo{"9.8": linuxTag("9.8", "amd64")},
-	}
-
-	if _, _, err := resolve(context.Background(), reg, "ubi9/ubi", regexp.MustCompile(`^9\.[0-9]+$`), "amd64", "linux"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if want := []string{"9."}; !slices.Equal(reg.prefixes, want) {
-		t.Errorf("prefixes = %v, want %v", reg.prefixes, want)
-	}
-}
-
-// TestResolveRereadsWithoutPrefix is the safety net. A registry that honours
-// last= but not the ordering it implies would hide matching tags behind the
-// skip; finding nothing is the signal to read the list in full. Worst case the
-// work is done twice, and only in a case that was going to fail anyway.
-func TestResolveRereadsWithoutPrefix(t *testing.T) {
-	reg := &fakeRegistry{
-		pages:          [][]string{{"9.8", "9.6"}},
-		newestFirst:    false,
-		emptyForPrefix: true,
-		info: map[string]TagInfo{
-			"9.8": linuxTag("9.8", "amd64"),
-			"9.6": linuxTag("9.6", "amd64"),
-		},
-	}
-
-	got, st, err := resolve(context.Background(), reg, "ubi9/ubi", regexp.MustCompile(`^9\.[0-9]+$`), "amd64", "linux")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Tag != "9.8" {
-		t.Errorf("tag = %s, want 9.8 - the second pass should have found it", got.Tag)
-	}
-	if want := []string{"9.", ""}; !slices.Equal(reg.prefixes, want) {
-		t.Errorf("prefixes = %v, want %v (skip, then the full list)", reg.prefixes, want)
-	}
-	// The reported cost has to cover both passes, or -verbose would understate
-	// the work.
-	if st.Pages != 1 || st.Tags != 2 {
-		t.Errorf("stats = %+v, want the pages and tags of both passes", st)
 	}
 }
 
