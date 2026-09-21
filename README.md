@@ -34,12 +34,27 @@ portainer/portainer-ee:^(\d+)\.(\d+)\.(\d+)-alpine$
 ```
 ### script:
 ```
+#!/usr/bin/env bash
 # pull.sh
-while IFS= read -r line; do
-    [[ "$line" =~ ^\s*# || -z "$line" ]] && continue
-    docker pull $(ldi "$line")
-done < image-list.txt
+set -uo pipefail
+
+while IFS= read -r line <&3 || [ -n "$line" ]; do
+    line=${line%%#*}                            # drop an inline comment
+    line=$(printf '%s' "$line" | tr -d '\r')    # tolerate a CRLF list
+    line="${line#"${line%%[![:space:]]*}"}"     # trim leading blanks
+    line="${line%"${line##*[![:space:]]}"}"     # trim trailing blanks
+    [ -z "$line" ] && continue
+
+    if ! image=$(ldi "$line" </dev/null); then
+        echo "skipped: $line" >&2
+        continue
+    fi
+    docker pull -q "$image"
+done 3< image-list.txt
 ```
+The list is read from file descriptor 3 so that `docker pull` cannot swallow the
+rest of it from stdin, and an `ldi` failure is skipped rather than turned into a
+`docker pull` with no argument.
 
 ## Notes
 - **Anchor version filters with `$`.** An unanchored `'(\d+)\.(\d+)\.(\d+)'`
