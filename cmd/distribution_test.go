@@ -11,16 +11,16 @@ import (
 	"testing"
 )
 
-// fakeRegistryServer, OCI Distribution davranışını taklit eder: kimlik
-// doğrulama meydan okuması, token endpoint'i ve istek kaydı.
+// fakeRegistryServer imitates OCI Distribution behaviour: the authentication
+// challenge, the token endpoint, and a log of the requests.
 type fakeRegistryServer struct {
 	srv *httptest.Server
 
 	mu       sync.Mutex
-	requests []string // "METOD yol" biçiminde
-	tokens   int      // token endpoint'inin çağrılma sayısı
+	requests []string // as "METHOD path"
+	tokens   int      // how many times the token endpoint was called
 
-	// handler, /v2/ altındaki istekleri karşılar (token doğrulandıktan sonra).
+	// handler serves the requests under /v2/, once the token has been checked.
 	handler func(w http.ResponseWriter, r *http.Request)
 }
 
@@ -42,8 +42,9 @@ func newFakeRegistry(t *testing.T, handler func(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		// Token yoksa meydan okuma döndür: gerçek registry'ler böyle yapıyor
-		// ve realm sabit gömülmemeli, bu başlıktan okunmalı.
+		// Without a token, answer with a challenge: that is what real
+		// registries do, and the realm must be read from this header rather
+		// than hardcoded.
 		if r.Header.Get("Authorization") != "Bearer T0K3N" {
 			w.Header().Set("Www-Authenticate",
 				fmt.Sprintf(`Bearer realm="%s/token",service="fake,service",scope="repository:x/y:pull"`, f.srv.URL))
@@ -77,7 +78,8 @@ func TestDistributionTokenAndPagination(t *testing.T) {
 	d, f := newFakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("last") == "" {
-			// Göreli Link adresi: sürücü bunu mevcut adrese göre çözümlemeli.
+			// A relative Link address: the driver must resolve it against the
+			// current one.
 			w.Header().Set("Link", `</v2/x/y/tags/list?n=100&last=2.0.0>; rel="next"`)
 			fmt.Fprint(w, `{"name":"x/y","tags":["1.0.0","2.0.0"]}`)
 			return
@@ -90,27 +92,27 @@ func TestDistributionTokenAndPagination(t *testing.T) {
 
 	first, err := pager.Next(ctx)
 	if err != nil {
-		t.Fatalf("birinci sayfa: %v", err)
+		t.Fatalf("first page: %v", err)
 	}
 	if strings.Join(first, ",") != "1.0.0,2.0.0" {
-		t.Errorf("birinci sayfa = %v", first)
+		t.Errorf("first page = %v", first)
 	}
 
 	second, err := pager.Next(ctx)
 	if err != nil {
-		t.Fatalf("ikinci sayfa: %v", err)
+		t.Fatalf("second page: %v", err)
 	}
 	if strings.Join(second, ",") != "3.0.0" {
-		t.Errorf("ikinci sayfa = %v", second)
+		t.Errorf("second page = %v", second)
 	}
 
 	if done, err := pager.Next(ctx); err != nil || done != nil {
-		t.Errorf("üçüncü çağrı = (%v, %v), beklenen (nil, nil)", done, err)
+		t.Errorf("third call = (%v, %v), want (nil, nil)", done, err)
 	}
 
-	// Token bir kez alınıp önbelleğe konmalı, her istekte yeniden değil.
+	// The token must be taken once and cached, not fetched per request.
 	if f.tokens != 1 {
-		t.Errorf("token endpoint %d kez çağrıldı, beklenen 1", f.tokens)
+		t.Errorf("token endpoint was called %d times, want 1", f.tokens)
 	}
 }
 
@@ -130,20 +132,21 @@ func TestDistributionInspectManifestIndex(t *testing.T) {
 	}
 
 	if len(info.Platforms) != 2 {
-		t.Fatalf("platform sayısı = %d, beklenen 2 (unknown elenmeliydi): %+v", len(info.Platforms), info.Platforms)
+		t.Fatalf("platform count = %d, want 2 (unknown should be dropped): %+v", len(info.Platforms), info.Platforms)
 	}
 	if !platformMatches(info, "amd64", "linux") || !platformMatches(info, "arm64", "linux") {
-		t.Errorf("platformlar = %+v", info.Platforms)
+		t.Errorf("platforms = %+v", info.Platforms)
 	}
 	if platformMatches(info, "unknown", "unknown") {
-		t.Error("attestation kaydı platform olarak sayılmamalı")
+		t.Error("an attestation record must not count as a platform")
 	}
 	if info.Digest != "sha256:deadbeef" {
 		t.Errorf("Digest = %q", info.Digest)
 	}
-	// Çok mimarili index'te tarih yok; çıktı bu yüzden digest'e düşüyor.
+	// A multi-architecture index carries no date, which is why the output
+	// falls back to the digest.
 	if info.LastUpdated != "" {
-		t.Errorf("LastUpdated = %q, boş beklenirdi", info.LastUpdated)
+		t.Errorf("LastUpdated = %q, want empty", info.LastUpdated)
 	}
 }
 
@@ -163,21 +166,22 @@ func TestDistributionInspectSingleManifest(t *testing.T) {
 		t.Fatalf("Inspect: %v", err)
 	}
 
-	// Tek manifest'te platform config blob'undan geliyor: bir ek istek.
+	// On a single manifest the platform comes from the config blob: one extra
+	// request.
 	if f.count("/blobs/sha256:cfg") != 1 {
-		t.Errorf("config blob istekleri = %d, beklenen 1", f.count("/blobs/sha256:cfg"))
+		t.Errorf("config blob requests = %d, want 1", f.count("/blobs/sha256:cfg"))
 	}
 	if !platformMatches(info, "amd64", "linux") {
-		t.Errorf("platformlar = %+v", info.Platforms)
+		t.Errorf("platforms = %+v", info.Platforms)
 	}
 	if info.LastUpdated != "2024-05-06T07:08:09.12Z" {
 		t.Errorf("LastUpdated = %q", info.LastUpdated)
 	}
 }
 
-// TestDistributionResolveScansAllPages, NewestFirst() == false olduğu için
-// hattın tüm sayfaları taradığını ve manifest'i yalnız isim filtresini geçen
-// aday için çektiğini doğrular.
+// TestDistributionResolveScansAllPages asserts that, because NewestFirst() is
+// false, the pipeline scans every page, and that it fetches a manifest only for
+// the candidate that passed the name filter.
 func TestDistributionResolveScansAllPages(t *testing.T) {
 	d, f := newFakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -200,24 +204,24 @@ func TestDistributionResolveScansAllPages(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 	if info.Tag != "9.1.0" {
-		t.Errorf("tag = %s, beklenen 9.1.0 (ikinci sayfada)", info.Tag)
+		t.Errorf("tag = %s, want 9.1.0 (on the second page)", info.Tag)
 	}
 
-	// Sadece aday için manifest çekilmeli: 1.0.0-beta elenmiş, alpine
-	// filtreyi geçmemiş.
+	// Only the candidate may be fetched: 1.0.0-beta was excluded and alpine
+	// did not pass the filter.
 	if n := f.count("/manifests/9.1.0"); n != 1 {
-		t.Errorf("9.1.0 manifest istekleri = %d, beklenen 1", n)
+		t.Errorf("9.1.0 manifest requests = %d, want 1", n)
 	}
 	for _, unwanted := range []string{"/manifests/1.0.0-beta", "/manifests/alpine"} {
 		if n := f.count(unwanted); n != 0 {
-			t.Errorf("%s icin %d istek yapildi, hic yapilmamaliydi", unwanted, n)
+			t.Errorf("%d requests were made for %s, expected none", n, unwanted)
 		}
 	}
 }
 
 func TestDistributionEmptyTagList(t *testing.T) {
-	// Boş repolarda "tags": null geliyor; nil dönmek "sayfalar bitti"
-	// anlamına geldiği için bunun boş sayfaya çevrilmesi gerekiyor.
+	// An empty repository answers with "tags": null; since nil would mean "no
+	// more pages", it has to become an empty page.
 	d, _ := newFakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"name":"x/y","tags":null}`)
@@ -228,10 +232,10 @@ func TestDistributionEmptyTagList(t *testing.T) {
 		t.Fatalf("Next: %v", err)
 	}
 	if page == nil {
-		t.Fatal("tags:null icin nil degil bos dilim donmeliydi")
+		t.Fatal("tags:null should yield an empty slice, not nil")
 	}
 	if len(page) != 0 {
-		t.Errorf("sayfa = %v", page)
+		t.Errorf("page = %v", page)
 	}
 }
 
@@ -244,7 +248,7 @@ func TestDistributionStatusErrors(t *testing.T) {
 	}{
 		{"404", http.StatusNotFound, `{"errors":[{"code":"NAME_UNKNOWN","message":"repository not found"}]}`, "repository not found"},
 		{"403", http.StatusForbidden, `{"errors":[{"code":"DENIED","message":"subscription required"}]}`, "subscription required"},
-		{"429", http.StatusTooManyRequests, `{}`, "istek limiti"},
+		{"429", http.StatusTooManyRequests, `{}`, "rate limit"},
 		{"500", http.StatusInternalServerError, ``, "HTTP 500"},
 	}
 
@@ -257,13 +261,13 @@ func TestDistributionStatusErrors(t *testing.T) {
 
 			_, err := d.Tags("x/y").Next(context.Background())
 			if err == nil {
-				t.Fatalf("HTTP %d icin hata bekleniyordu", tc.status)
+				t.Fatalf("expected an error for HTTP %d", tc.status)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("hata = %q, %q icermeliydi", err, tc.want)
+				t.Errorf("error = %q, should contain %q", err, tc.want)
 			}
 			if !strings.Contains(err.Error(), "fake.registry") {
-				t.Errorf("hata = %q, registry adini tasimaliydi", err)
+				t.Errorf("error = %q, should carry the registry name", err)
 			}
 		})
 	}
@@ -277,7 +281,7 @@ func TestParseChallenge(t *testing.T) {
 	if params["realm"] != "https://auth.example/token" {
 		t.Errorf("realm = %q", params["realm"])
 	}
-	// Tırnak içindeki virgüller parametreyi bölmemeli.
+	// Commas inside quotes must not split a parameter.
 	if params["service"] != "reg,with,commas" {
 		t.Errorf("service = %q", params["service"])
 	}
@@ -286,10 +290,10 @@ func TestParseChallenge(t *testing.T) {
 	}
 
 	if s, p := parseChallenge(""); s != "" || len(p) != 0 {
-		t.Errorf("bos baslik = (%q, %v)", s, p)
+		t.Errorf("empty header = (%q, %v)", s, p)
 	}
 	if s, _ := parseChallenge("Basic"); s != "Basic" {
-		t.Errorf("parametresiz sema = %q", s)
+		t.Errorf("scheme without parameters = %q", s)
 	}
 }
 
@@ -305,12 +309,12 @@ func TestNextLink(t *testing.T) {
 		{`</a>; rel="prev", </b>; rel="next"`, "https://reg.example/b"},
 		{`</a>; rel="prev"`, ""},
 		{``, ""},
-		{`bozuk`, ""},
+		{`malformed`, ""},
 	}
 
 	for _, tc := range tests {
 		if got := nextLink(tc.header, base); got != tc.want {
-			t.Errorf("nextLink(%q) = %q, beklenen %q", tc.header, got, tc.want)
+			t.Errorf("nextLink(%q) = %q, want %q", tc.header, got, tc.want)
 		}
 	}
 }

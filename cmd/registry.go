@@ -12,86 +12,88 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// httpClient, varsayılan client'ın timeout'suz olmasını önler. Sürücüler
-// bağlantıyı yeniden kullanabilmek için aynı client'ı paylaşır.
+// httpClient keeps requests from inheriting the default client's lack of a
+// timeout. Drivers share it so connections get reused.
 var httpClient = &http.Client{Timeout: 20 * time.Second}
 
-// Platform, bir imajın yayınlandığı işletim sistemi/mimari çifti.
+// Platform is an os/architecture pair an image is published for.
 type Platform struct {
 	Arch string
 	OS   string
 }
 
-// TagInfo, tek bir tag hakkında sürücünün bildiklerini taşır.
+// TagInfo carries what a driver knows about a single tag.
 type TagInfo struct {
 	Tag string
 
-	// Platforms, tag'in yayınlandığı platformlar. Boş liste "platform bilgisi
-	// yok" demektir ve platform filtresi böyle bir tag'i geçirmez.
+	// Platforms lists the platforms the tag is published for. An empty list
+	// means "no platform information", and the platform filter rejects it.
 	Platforms []Platform
 
-	// AnyPlatform, platform filtresinin bu tag'e uygulanmaması gerektiğini
-	// bildirir. Docker Hub'da content_type == "plugin" olan kayıtlar mimari
-	// listesi taşımaz ve bu şekilde işaretlenir.
+	// AnyPlatform says the platform filter must not be applied to this tag.
+	// Docker Hub records with content_type == "plugin" carry no architecture
+	// list and are marked this way.
 	AnyPlatform bool
 
-	// LastUpdated, sürücünün verdiği ham zaman damgası. Her registry bu bilgiyi
-	// ucuza veremez, dolayısıyla boş olabilir: OCI Distribution'da çok mimarili
-	// bir index için hiç gelmez.
+	// LastUpdated is the raw timestamp as the driver reported it. Not every
+	// registry can supply one cheaply, so it may be empty: OCI Distribution
+	// carries none at all for a multi-architecture index.
 	LastUpdated string
 
-	// Digest, tag'in işaret ettiği manifest digest'i. Tarih yoksa çıktıda onun
-	// yerine bu gösterilir; güncelleme kontrolü için de doğru alan budur.
+	// Digest is the manifest digest the tag points at. It is shown instead of
+	// the date when there is none, and it is the right field for an update
+	// check.
 	Digest string
 }
 
-// TagPager, bir reponun tag isimlerini sayfa sayfa okur.
+// TagPager reads a repository's tag names one page at a time.
 type TagPager interface {
-	// Next bir sonraki sayfayı döndürür; sayfalar tükendiğinde (nil, nil).
-	// Boş ama nil olmayan bir dilim "bu sayfa boş, devam et" anlamındadır.
+	// Next returns the next page, or (nil, nil) once the pages run out. An
+	// empty but non-nil slice means "this page is empty, keep going".
 	Next(ctx context.Context) ([]string, error)
 }
 
-// Registry, bir repodaki tag'lerin kaynağı. Faz 1'de OCI Distribution sürücüsü
-// de bu arayüzü uygulayacak.
+// Registry is a source of tags for a repository. Both the Docker Hub and the
+// OCI Distribution driver implement it.
 type Registry interface {
-	// Name, hata mesajlarında görünen registry adı.
+	// Name is the registry name that appears in error messages.
 	Name() string
 
-	// Tags, repo için tag isimlerini sayfalayan bir okuyucu döndürür.
+	// Tags returns a reader that pages through the repository's tag names.
 	Tags(repo string) TagPager
 
-	// Inspect, tek bir tag'in platform ve tarih bilgisini verir. Bu çağrı ağa
-	// çıkabilir; resolve onu yalnız isim filtresini geçen tag'ler için yapar.
+	// Inspect reports platform and date detail for a single tag. It may hit
+	// the network, so resolve only calls it for tags that passed the name
+	// filters.
 	Inspect(ctx context.Context, repo, tag string) (TagInfo, error)
 
-	// NewestFirst, Tags'in en yeni tag'i ilk sayfada verdiğini bildirir. true
-	// ise resolve, eşleşme bulduğu sayfada sayfalamayı bırakır. OCI
-	// Distribution sözlük sırası kullandığı için orada false olacak.
+	// NewestFirst says Tags yields the newest tag on the first page. When it
+	// is true, resolve stops paging on the page that produced a match. OCI
+	// Distribution returns tags in lexical order, so it reports false.
 	NewestFirst() bool
 }
 
-// ErrNoMatch, filtreleri geçen hiçbir tag bulunamadığında döner.
-var ErrNoMatch = errors.New("eşleşen tag bulunamadı")
+// ErrNoMatch is returned when no tag passed the filters.
+var ErrNoMatch = errors.New("no matching tag found")
 
-// excludeRe, ön-sürüm ve kayan (floating) tag'leri eler. Kalıp sınırlara
-// bağlıdır: sınırsız `rc` deseni "torch", "arch", "source" gibi geçerli
-// tag'leri de sessizce düşürüyordu.
+// excludeRe drops pre-release and floating tags. The pattern is anchored to
+// separators on purpose: an unbounded `rc` used to silently discard valid tags
+// such as "torch", "arch" and "source".
 //
-// "-source" ayrıca elenir: Red Hat registry'lerinde her imajın yanında bir
-// kaynak konteyneri yayınlanıyor (ör. "9.0.0-1468-source") ve bunlar
-// çalıştırılabilir imaj değil. Sınırsız `rc` deseni bunları tesadüfen
-// eliyordu ("source" içinde "rc" geçiyor); artık açıkça belirtiliyor.
+// "-source" is excluded as well. Red Hat registries publish a source container
+// beside every image (for example "9.0.0-1468-source") and it is not runnable.
+// The unbounded `rc` pattern dropped those by accident, since "source" contains
+// "rc"; now the rule is stated explicitly.
 var excludeRe = regexp.MustCompile(
 	`(?i)(^|[-._])(alpha|beta|rc|pre|preview|dev|snapshot|nightly|canary|edge)([-._0-9]|$)` +
 		`|^latest([-._]|$)` +
 		`|[-._]source$`)
 
-// resolve, ortak seçim hattıdır: isimleri sayfala, isim üzerinden filtrele,
-// yalnız filtreyi geçenlerin platformunu sorgula, sırala ve en uygun tag'i
-// döndür. Platform sorgusunun isim filtresinden SONRA gelmesi kasıtlı: ağa
-// çıkma maliyeti yüksek olan sürücülerde (Distribution) istek sayısını
-// aday sayısına indirir.
+// resolve is the shared selection pipeline: page through the names, filter on
+// the name alone, ask for the platform of the survivors only, sort, and return
+// the best tag. Querying the platform AFTER the name filter is deliberate: on
+// drivers where a lookup is expensive (Distribution) it brings the request
+// count down to the number of candidates.
 func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Regexp, arch, osName string) (TagInfo, error) {
 	pager := reg.Tags(repo)
 
@@ -119,9 +121,9 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 			}
 		}
 
-		// Sayfalar en yeniden eskiye geliyorsa eşleşme bulunduğu anda durmak
-		// güvenli; sözlük sırasıyla gelen registry'lerde yanlış olur. Kararı
-		// bu yüzden sürücü veriyor.
+		// When pages arrive newest-first it is safe to stop at the first
+		// match; for a registry that returns lexical order it would be wrong.
+		// That is why the driver decides.
 		if len(matches) > 0 && reg.NewestFirst() {
 			break
 		}
@@ -136,10 +138,10 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 	best := matches[0]
 	if len(matches) > 1 {
 		next := matches[1]
-		// "1.0" ile "1.0.1" gibi durumlarda daha özgül olanı tercih et.
-		// NOT: semver sıralamasıyla birleştiğinde bu kural "1.2.3" yerine
-		// "1.2.3-alpine" seçilmesine yol açabiliyor. Davranış bilinçli olarak
-		// korunuyor; README regex'i `$` ile bağlamayı öneriyor.
+		// Prefer the more specific one for cases like "1.0" and "1.0.1".
+		// NOTE: combined with semver ordering this rule can pick
+		// "1.2.3-alpine" over "1.2.3". The behaviour is kept deliberately;
+		// the README recommends anchoring the regex with `$`.
 		if strings.HasPrefix(next.Tag, best.Tag) && len(next.Tag) > len(best.Tag) {
 			best = next
 		}
@@ -147,8 +149,8 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 	return best, nil
 }
 
-// platformMatches, tag'in istenen os/mimari için yayınlanıp yayınlanmadığını
-// söyler.
+// platformMatches reports whether the tag is published for the requested
+// os/architecture.
 func platformMatches(info TagInfo, arch, osName string) bool {
 	if info.AnyPlatform {
 		return true
@@ -161,15 +163,15 @@ func platformMatches(info TagInfo, arch, osName string) bool {
 	return false
 }
 
-// sortTags, tag'leri yeniden eskiye (en yüksek sürüm başta) sıralar.
+// sortTags orders tags newest first, highest version at the front.
 func sortTags(tags []TagInfo) {
 	slices.SortFunc(tags, func(a, b TagInfo) int {
 		return compareTags(a.Tag, b.Tag)
 	})
 }
 
-// compareTags, a'nın b'den önce gelmesi gerekiyorsa negatif döner. Aynı temel
-// sürümün -security- yeniden derlemesi düz sürümden önce gelir.
+// compareTags returns a negative value when a should come before b. A
+// -security- rebuild of the same base version wins over the plain release.
 func compareTags(a, b string) int {
 	v1 := a
 	if !strings.HasPrefix(v1, "v") {
@@ -209,7 +211,7 @@ func getBaseVersion(v string) string {
 	return c
 }
 
-// Faz 1 için notlar (quay.io, OCI Distribution):
+// Reference material for further registry work:
 // https://quay.io/api/v1/repository/prometheus/node-exporter/tag/?limit=100&page=1&onlyActiveTags=true
 // https://quay.io/api/v1/repository/prometheus/node-exporter/manifest/sha256:...
 // https://github.com/shogo82148/docker-image-update-checker/blob/main/registry/registry.go

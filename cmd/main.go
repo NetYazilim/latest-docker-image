@@ -13,7 +13,7 @@ import (
 	cli "github.com/urfave/cli/v3"
 )
 
-// Config, komut satırından gelen ayarlar.
+// Config holds the settings that come from the command line.
 type Config struct {
 	Architecture string
 	OS           string
@@ -64,12 +64,12 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	if ref.Digest != "" {
-		return fmt.Errorf("@digest ile sabit referans desteklenmiyor: %s", ref.Digest)
+		return fmt.Errorf("a pinned @digest reference is not supported: %s", ref.Digest)
 	}
 	repo := ref.Repo
 	cfg.Tag = ref.Filter
-	// name, kullanıcıya gösterilen ve stdout'a yazılan tam ad (host dahil);
-	// repo ise registry'ye sorulan yol.
+	// name is the full name shown to the user and written to stdout (host
+	// included); repo is the path asked of the registry.
 	name := ref.Name()
 
 	filter, err := regexp.Compile(cfg.Tag)
@@ -81,17 +81,20 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	info, err := resolve(ctx, reg, repo, filter, cfg.Architecture, cfg.OS)
 	if err != nil && !errors.Is(err, ErrNoMatch) {
-		return fmt.Errorf("HTTP isteği başarısız: %w", err)
+		// No blanket wrapper here: every driver already names itself in its
+		// errors, and a generic "request failed" prefix made an
+		// authentication failure read like a network problem.
+		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "\nRepo.: %s, Arch.: %s, OS: %s, Filter: %s", name, cfg.Architecture, cfg.OS, cfg.Tag)
 
-	// Hata durumunda stdout BOŞ kalmalı: README'deki
-	// `docker pull $(ldi ...)` kalıbı aksi halde
-	// "docker pull no-new-image!" komutunu çalıştırıyordu.
-	// (os.Exit(-1) de gerçekte 255 kodunu üretiyordu.)
+	// On failure stdout must stay EMPTY: otherwise the README's
+	// `docker pull $(ldi ...)` idiom ended up running
+	// "docker pull no-new-image!".
+	// (os.Exit(-1) also produced 255 rather than 1.)
 	if errors.Is(err, ErrNoMatch) {
-		fmt.Fprintf(os.Stderr, ", Bulunamadı\n")
+		fmt.Fprintf(os.Stderr, ", Not found\n")
 		os.Exit(1)
 	}
 
@@ -100,20 +103,20 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// pickRegistry, referansa göre sürücüyü seçer.
+// pickRegistry chooses the driver for a reference.
 //
-// Docker Hub, Distribution protokolünü registry-1.docker.io üzerinden de
-// konuşuyor; ama tescilli API'si tag + platform + tarihi tek çağrıda verdiği
-// için oraya taşımak anlamsız olurdu: aynı bilgi tag başına iki ek istek
-// ederdi ve manifest istekleri Hub'ın pull limitine sayılır.
+// Docker Hub speaks the Distribution protocol too, over registry-1.docker.io,
+// but moving it there would make no sense: its proprietary API answers with
+// tag, platform and date in one call, while the same information would cost two
+// extra requests per tag and count against Hub's pull limit.
 func pickRegistry(ref Reference) Registry {
 	if ref.Host != "" && !isDockerHub(ref.Host) {
 		return newDistribution(ref.Host)
 	}
 
-	// Regex'in zorunlu literal parçası varsa Docker Hub'ın sunucu tarafı
-	// `name=` filtresine verilir; sayfa sayısını düşürür. Distribution'da
-	// böyle bir filtre yok.
+	// When the regex has a required literal part, it is handed to Docker Hub's
+	// server-side `name=` filter to cut down the number of pages.
+	// Distribution has no such filter.
 	nameFilter := ""
 	if rep, err := syntax.Parse(ref.Filter, syntax.Perl); err == nil {
 		nameFilter = requiredLiteral(rep.Simplify())
@@ -121,7 +124,7 @@ func pickRegistry(ref Reference) Registry {
 	return newDockerHub(nameFilter)
 }
 
-// isDockerHub, Docker Hub'ı adlandıran host takma adlarını tanır.
+// isDockerHub recognises the host aliases that name Docker Hub.
 func isDockerHub(host string) bool {
 	switch host {
 	case "docker.io", "index.docker.io", "registry-1.docker.io", "registry.hub.docker.com":
@@ -130,8 +133,8 @@ func isDockerHub(host string) bool {
 	return false
 }
 
-// reportTag, seçilen tag'i stderr'e yazar. Tarih her registry'de bulunmadığı
-// için yoksa digest gösterilir.
+// reportTag writes the chosen tag to stderr. Not every registry supplies a
+// date, so the digest is shown when there is none.
 func reportTag(info TagInfo) {
 	if info.LastUpdated != "" {
 		stamp := info.LastUpdated

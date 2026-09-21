@@ -6,27 +6,28 @@ import (
 	"strings"
 )
 
-// Reference, komut satırında verilen imaj referansı:
+// Reference is an image reference as given on the command line:
 //
-//	[host[:port]/]yol[:tag-regex][@digest]
+//	[host[:port]/]path[:tag-regex][@digest]
 //
-// Ayrıştırma sürücüden bağımsızdır; namespace normalizasyonu (Docker Hub'ın
-// "library/" öneki gibi) ilgili sürücünün işi.
+// Parsing is driver independent; namespace normalisation (such as Docker Hub's
+// "library/" prefix) is the relevant driver's job.
 type Reference struct {
-	// Host, registry adresi. Boşsa Docker Hub kastedilmiştir.
+	// Host is the registry address. Empty means Docker Hub.
 	Host string
-	// Repo, registry'nin beklediği repo yolu.
+	// Repo is the repository path as the registry expects it.
 	Repo string
-	// Filter, tag seçimi için regex. Boşsa tüm tag'ler aday.
+	// Filter is the regex used to select a tag. Empty means every tag is a
+	// candidate.
 	Filter string
-	// Digest, @sha256:... ile verilen sabit referans.
+	// Digest is the pinned reference given with @sha256:...
 	Digest string
 }
 
-// Name, referansın çekilebilir tam adını döndürür: host verildiyse
-// "host/yol", verilmediyse yolun kendisi. ldi'nin stdout'a yazdığı ad bu
-// olmalı, yoksa `docker pull $(ldi registry.redhat.io/ubi9/ubi)` host'u
-// kaybedip yanlış imajı arar.
+// Name returns the pullable full name of the reference: "host/path" when a
+// host was given, the path itself otherwise. This is the name ldi must write to
+// stdout; without it `docker pull $(ldi registry.redhat.io/ubi9/ubi)` would drop
+// the host and look for the wrong image.
 func (r Reference) Name() string {
 	if r.Host == "" {
 		return r.Repo
@@ -34,16 +35,16 @@ func (r Reference) Name() string {
 	return r.Host + "/" + r.Repo
 }
 
-// ParseReference, referansı parçalarına ayırır.
+// ParseReference splits a reference into its parts.
 //
-// Tag ayırıcısı "son / işaretinden sonraki son :" olarak bulunur; böylece
-// host:port ile tag regex'i karışmaz. İlk bileşen nokta ya da iki nokta
-// içeriyorsa veya "localhost" ise registry adresi sayılır - Docker'ın kendi
-// kuralı da budur.
+// The tag separator is the last colon after the last slash, so a host:port
+// cannot be mistaken for a tag regex. The first component counts as a registry
+// address when it contains a dot or a colon, or is "localhost" - Docker's own
+// rule.
 func ParseReference(s string) (Reference, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return Reference{}, errors.New("imaj adı boş")
+		return Reference{}, errors.New("empty image name")
 	}
 
 	var ref Reference
@@ -52,10 +53,10 @@ func ParseReference(s string) (Reference, error) {
 		ref.Digest = s[i+1:]
 		s = s[:i]
 		if ref.Digest == "" {
-			return Reference{}, errors.New("@ işaretinden sonra digest yok")
+			return Reference{}, errors.New("no digest after @")
 		}
 		if s == "" {
-			return Reference{}, errors.New("digest öncesinde repo adı yok")
+			return Reference{}, errors.New("no repository name before the digest")
 		}
 	}
 
@@ -72,10 +73,10 @@ func ParseReference(s string) (Reference, error) {
 	}
 
 	if s == "" {
-		return Reference{}, errors.New("repo adı yok")
+		return Reference{}, errors.New("no repository name")
 	}
 	if strings.ContainsAny(s, ":@") {
-		return Reference{}, fmt.Errorf("geçersiz repo adı %q", s)
+		return Reference{}, fmt.Errorf("invalid repository name %q", s)
 	}
 
 	ref.Repo = s

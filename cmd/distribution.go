@@ -10,8 +10,9 @@ import (
 	"strings"
 )
 
-// OCI Distribution manifest ortam tipleri. Accept başlığında hepsi birlikte
-// istenir: sunucu çok mimarili bir index varsa onu, yoksa tek manifest'i döner.
+// OCI Distribution manifest media types. All of them are asked for together in
+// the Accept header: the server answers with a multi-architecture index when it
+// has one, and a single manifest otherwise.
 const (
 	mediaOCIIndex       = "application/vnd.oci.image.index.v1+json"
 	mediaOCIManifest    = "application/vnd.oci.image.manifest.v1+json"
@@ -23,23 +24,23 @@ var manifestAccept = strings.Join([]string{
 	mediaOCIIndex, mediaDockerList, mediaOCIManifest, mediaDockerManifest,
 }, ", ")
 
-// distribution, OCI Distribution (eski adıyla Docker Registry HTTP API v2)
-// konuşan registry'ler için sürücü: registry.redhat.io, registry.access.redhat.com,
-// quay.io, ghcr.io, Harbor...
+// distribution is the driver for registries speaking OCI Distribution (formerly
+// the Docker Registry HTTP API v2): registry.redhat.io,
+// registry.access.redhat.com, quay.io, ghcr.io, Harbor and so on.
 //
-// Bu API Docker Hub'ın tescilli API'sinden çok daha az bilgi verir:
-// tags/list yalnız isim döner, platform için tag başına manifest çekmek
-// gerekir. resolve bu yüzden Inspect'i sadece isim filtresini geçen adaylar
-// için çağırıyor.
+// This API gives far less than Docker Hub's proprietary one: tags/list returns
+// names only, and the platform costs one manifest request per tag. That is why
+// resolve calls Inspect solely for the candidates that passed the name filter.
 //
-// Faz 1 kapsamı: anonim erişim. Token handshake'i yapılır ama kimlik bilgisi
-// gönderilmez; auth.json / config.json okuma Faz 2'de eklenecek.
+// Current scope: anonymous access. The token handshake is performed but no
+// credentials are sent; reading auth.json / config.json comes next.
 type distribution struct {
 	host string
-	// baseURL, registry kökü; yalnız testlerde değiştirilir.
+	// baseURL is the registry root; only tests change it.
 	baseURL string
-	// tokens, repo başına Bearer token önbelleği. Token'lar repo kapsamlı ve
-	// kısa ömürlü olduğu için süreç ömrü boyunca tutmak yeterli.
+	// tokens caches the Bearer token per repository. Tokens are repository
+	// scoped and short lived, so keeping them for the life of the process is
+	// enough.
 	tokens map[string]string
 }
 
@@ -53,9 +54,9 @@ func newDistribution(host string) *distribution {
 
 func (d *distribution) Name() string { return d.host }
 
-// NewestFirst: OCI spesifikasyonu tag'lerin sözlük ("ASCIIbetical") sırasında
-// dönmesini şart koşar, yani ilk sayfa en yeni sürümü taşımaz. Bu yüzden
-// sayfalama erken kesilemez, tüm liste taranmalı.
+// NewestFirst: the OCI specification requires tags in lexical ("ASCIIbetical")
+// order, so the first page does not carry the newest version. Paging therefore
+// cannot stop early; the whole list has to be scanned.
 func (d *distribution) NewestFirst() bool { return false }
 
 func (d *distribution) Tags(repo string) TagPager {
@@ -66,8 +67,8 @@ func (d *distribution) Tags(repo string) TagPager {
 	}
 }
 
-// distPager, Link başlığındaki rel="next" bağlantısını izleyerek sayfaları
-// dolaşır.
+// distPager walks the pages by following the rel="next" link in the Link
+// header.
 type distPager struct {
 	dist *distribution
 	repo string
@@ -91,7 +92,7 @@ func (p *distPager) Next(ctx context.Context) ([]string, error) {
 		Tags []string `json:"tags"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("%s: tag listesi okunamadı: %w", p.dist.host, err)
+		return nil, fmt.Errorf("%s: could not read the tag list: %w", p.dist.host, err)
 	}
 
 	if next := nextLink(resp.Header.Get("Link"), p.url); next != "" {
@@ -100,8 +101,8 @@ func (p *distPager) Next(ctx context.Context) ([]string, error) {
 		p.done = true
 	}
 
-	// Boş repolarda "tags": null gelebiliyor. nil dönmek "sayfalar bitti"
-	// anlamına geldiği için boş dilime çeviriyoruz.
+	// An empty repository can answer with "tags": null. Returning nil would
+	// mean "no more pages", so it is turned into an empty slice.
 	if body.Tags == nil {
 		return []string{}, nil
 	}
@@ -117,7 +118,7 @@ func (d *distribution) Inspect(ctx context.Context, repo, tag string) (TagInfo, 
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return TagInfo{}, fmt.Errorf("%s: %s manifest'i okunamadı: %w", d.host, tag, err)
+		return TagInfo{}, fmt.Errorf("%s: could not read the manifest of %s: %w", d.host, tag, err)
 	}
 
 	info := TagInfo{Tag: tag, Digest: resp.Header.Get("Docker-Content-Digest")}
@@ -134,14 +135,14 @@ func (d *distribution) Inspect(ctx context.Context, repo, tag string) (TagInfo, 
 		} `json:"config"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return TagInfo{}, fmt.Errorf("%s: %s manifest'i ayrıştırılamadı: %w", d.host, tag, err)
+		return TagInfo{}, fmt.Errorf("%s: could not parse the manifest of %s: %w", d.host, tag, err)
 	}
 
-	// Çok mimarili index: platform listesi manifest'in kendisinde.
+	// Multi-architecture index: the platform list is in the manifest itself.
 	if len(m.Manifests) > 0 {
 		for _, sub := range m.Manifests {
-			// buildkit'in attestation/imza kayıtları "unknown/unknown"
-			// platformuyla geliyor; bunlar çalıştırılabilir imaj değil.
+			// buildkit's attestation and signature records arrive with an
+			// "unknown/unknown" platform; they are not runnable images.
 			if sub.Platform.Architecture == "" || sub.Platform.Architecture == "unknown" {
 				continue
 			}
@@ -153,8 +154,8 @@ func (d *distribution) Inspect(ctx context.Context, repo, tag string) (TagInfo, 
 		return info, nil
 	}
 
-	// Tek manifest: platform bilgisi manifest'te yok, config blob'unda.
-	// Bu yüzden yalnız tek mimarili imajlarda bir ek istek gerekiyor.
+	// Single manifest: the platform is not in the manifest but in the config
+	// blob, so only single-architecture images cost one extra request.
 	if m.Config.Digest == "" {
 		return info, nil
 	}
@@ -166,8 +167,8 @@ func (d *distribution) Inspect(ctx context.Context, repo, tag string) (TagInfo, 
 	if cfg.Architecture != "" {
 		info.Platforms = append(info.Platforms, Platform{Arch: cfg.Architecture, OS: cfg.OS})
 	}
-	// config.created imajın derlenme zamanı; Docker Hub'ın last_updated
-	// alanının en yakın karşılığı ve yalnız burada bedava geliyor.
+	// config.created is the image build time: the closest counterpart to
+	// Docker Hub's last_updated, and free only along this path.
 	info.LastUpdated = cfg.Created
 
 	return info, nil
@@ -188,13 +189,13 @@ func (d *distribution) imageConfig(ctx context.Context, repo, digest string) (im
 
 	var cfg imageConfig
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&cfg); err != nil {
-		return imageConfig{}, fmt.Errorf("%s: config blob'u okunamadı: %w", d.host, err)
+		return imageConfig{}, fmt.Errorf("%s: could not read the config blob: %w", d.host, err)
 	}
 	return cfg, nil
 }
 
-// get, isteği yapar; 401 gelirse meydan okumadan token alıp bir kez tekrar
-// dener. Dönen yanıtın gövdesini çağıran kapatır.
+// get performs the request and, on a 401, takes a token from the challenge and
+// retries once. The caller closes the body of the returned response.
 func (d *distribution) get(ctx context.Context, repo, rawURL, accept string) (*http.Response, error) {
 	resp, err := d.do(ctx, rawURL, accept, d.tokens[repo])
 	if err != nil {
@@ -237,30 +238,30 @@ func (d *distribution) do(ctx context.Context, rawURL, accept, token string) (*h
 	return httpClient.Do(req)
 }
 
-// fetchToken, 401 yanıtındaki WWW-Authenticate meydan okumasından realm ve
-// service değerlerini okuyup token ister. Realm sabit olarak gömülmez; her
-// registry kendi adresini bu başlıkta bildirir.
+// fetchToken reads the realm and service from the WWW-Authenticate challenge of
+// a 401 response and asks for a token. The realm is never hardcoded; every
+// registry announces its own address in that header.
 //
-// Faz 2: kimlik bilgisi (Registry Service Account) burada req.SetBasicAuth ile
-// eklenecek. Şu hali anonim token alır, bu da registry.access.redhat.com,
-// quay.io ve ghcr.io'nun public içeriği için yeterli.
+// Next step: credentials (a Registry Service Account) will be added here with
+// req.SetBasicAuth. As it stands it takes an anonymous token, which is enough
+// for public content on registry.access.redhat.com, quay.io and ghcr.io.
 func (d *distribution) fetchToken(ctx context.Context, repo, challenge string) (string, error) {
 	scheme, params := parseChallenge(challenge)
 	if scheme == "" {
-		return "", fmt.Errorf("%s: 401 yanıtında WWW-Authenticate başlığı yok", d.host)
+		return "", fmt.Errorf("%s: the 401 response carried no WWW-Authenticate header", d.host)
 	}
 	if !strings.EqualFold(scheme, "bearer") {
-		return "", fmt.Errorf("%s: desteklenmeyen kimlik doğrulama yöntemi %q", d.host, scheme)
+		return "", fmt.Errorf("%s: unsupported authentication scheme %q", d.host, scheme)
 	}
 
 	realm := params["realm"]
 	if realm == "" {
-		return "", fmt.Errorf("%s: kimlik doğrulama meydan okumasında realm yok", d.host)
+		return "", fmt.Errorf("%s: the authentication challenge carried no realm", d.host)
 	}
 
 	u, err := url.Parse(realm)
 	if err != nil {
-		return "", fmt.Errorf("%s: realm adresi çözümlenemedi: %w", d.host, err)
+		return "", fmt.Errorf("%s: could not parse the realm address: %w", d.host, err)
 	}
 
 	q := u.Query()
@@ -289,7 +290,7 @@ func (d *distribution) fetchToken(ctx context.Context, repo, challenge string) (
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return "", fmt.Errorf("%s: token alınamadı (HTTP %d)%s", d.host, resp.StatusCode, ociDetail(body))
+		return "", fmt.Errorf("%s: could not obtain a token (HTTP %d)%s", d.host, resp.StatusCode, ociDetail(body))
 	}
 
 	var body struct {
@@ -297,7 +298,7 @@ func (d *distribution) fetchToken(ctx context.Context, repo, challenge string) (
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return "", fmt.Errorf("%s: token yanıtı okunamadı: %w", d.host, err)
+		return "", fmt.Errorf("%s: could not read the token response: %w", d.host, err)
 	}
 
 	switch {
@@ -306,27 +307,27 @@ func (d *distribution) fetchToken(ctx context.Context, repo, challenge string) (
 	case body.AccessToken != "":
 		return body.AccessToken, nil
 	}
-	return "", fmt.Errorf("%s: token yanıtı boş", d.host)
+	return "", fmt.Errorf("%s: the token response was empty", d.host)
 }
 
-// statusError, registry'nin durum kodunu işe yarar bir mesaja çevirir.
+// statusError turns the registry's status code into a message worth reading.
 func (d *distribution) statusError(code int, body []byte) error {
 	switch code {
 	case http.StatusUnauthorized:
-		return fmt.Errorf("%s: kimlik doğrulama gerekiyor; bu registry anonim erişime kapalı%s", d.host, ociDetail(body))
+		return fmt.Errorf("%s: authentication required; this registry is closed to anonymous access%s", d.host, ociDetail(body))
 	case http.StatusForbidden:
-		return fmt.Errorf("%s: erişim yok; abonelik/entitlement gerekebilir%s", d.host, ociDetail(body))
+		return fmt.Errorf("%s: access denied; a subscription or entitlement may be required%s", d.host, ociDetail(body))
 	case http.StatusNotFound:
-		// Registry'ler sızıntıyı önlemek için "yok" ile "göremiyorsun"u
-		// ayırmaz; mesaj bunu söylüyor.
-		return fmt.Errorf("%s: repo bulunamadı (ya yok ya da görme yetkiniz yok)%s", d.host, ociDetail(body))
+		// Registries deliberately conflate "does not exist" with "you cannot
+		// see it", to avoid leaking; the message says so.
+		return fmt.Errorf("%s: repository not found (it may not exist, or you may not be allowed to see it)%s", d.host, ociDetail(body))
 	case http.StatusTooManyRequests:
-		return fmt.Errorf("%s: istek limiti aşıldı%s", d.host, ociDetail(body))
+		return fmt.Errorf("%s: rate limit exceeded%s", d.host, ociDetail(body))
 	}
-	return fmt.Errorf("%s: beklenmeyen yanıt (HTTP %d)%s", d.host, code, ociDetail(body))
+	return fmt.Errorf("%s: unexpected response (HTTP %d)%s", d.host, code, ociDetail(body))
 }
 
-// ociDetail, OCI hata gövdesindeki ilk açıklamayı " - mesaj" biçiminde döndürür.
+// ociDetail returns the first description in an OCI error body as " - message".
 func ociDetail(body []byte) string {
 	var e struct {
 		Errors []struct {
@@ -347,9 +348,9 @@ func ociDetail(body []byte) string {
 	return ""
 }
 
-// parseChallenge, `Bearer realm="https://...",service="..."` biçimindeki
-// WWW-Authenticate başlığını şema ve parametrelerine ayırır. Parametre
-// adları küçük harfe indirilir.
+// parseChallenge splits a WWW-Authenticate header of the form
+// `Bearer realm="https://...",service="..."` into its scheme and parameters.
+// Parameter names are lowercased.
 func parseChallenge(h string) (scheme string, params map[string]string) {
 	params = map[string]string{}
 
@@ -375,8 +376,9 @@ func parseChallenge(h string) (scheme string, params map[string]string) {
 	return scheme, params
 }
 
-// nextLink, RFC 5988 Link başlığından rel="next" adresini çıkarır. Registry'ler
-// göreli yol döndürebildiği için sonuç mevcut adrese göre çözümlenir.
+// nextLink extracts the rel="next" address from an RFC 5988 Link header. A
+// registry may return a relative path, so the result is resolved against the
+// current address.
 func nextLink(header, base string) string {
 	for _, part := range splitOutsideQuotes(header, ',') {
 		segs := strings.Split(part, ";")
@@ -413,7 +415,7 @@ func nextLink(header, base string) string {
 	return ""
 }
 
-// splitOutsideQuotes, tırnak içindeki ayırıcıları yok sayarak böler.
+// splitOutsideQuotes splits on sep while ignoring separators inside quotes.
 func splitOutsideQuotes(s string, sep rune) []string {
 	var (
 		out     []string
