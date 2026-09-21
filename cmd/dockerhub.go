@@ -9,10 +9,9 @@ import (
 	"net/url"
 	"regexp/syntax"
 	"strings"
-	"time"
 )
 
-// hubTag, hub.docker.com/v2/.../tags yanıtındaki tek kayıt.
+// hubTag is a single record in a hub.docker.com/v2/.../tags response.
 type hubTag struct {
 	Name        string     `json:"name"`
 	ContentType string     `json:"content_type"`
@@ -31,22 +30,19 @@ type hubResponse struct {
 	Results []hubTag `json:"results"`
 }
 
-// httpClient, varsayılan client'ın timeout'suz olmasını önler.
-var httpClient = &http.Client{Timeout: 20 * time.Second}
-
-// hubBaseURL, Docker Hub API'sinin kökü. Testler bunu kendi sunucularına
-// yöneltebilmek için dockerHub.baseURL alanını değiştirir.
+// hubBaseURL is the root of the Docker Hub API. Tests point dockerHub.baseURL
+// at their own server instead.
 const hubBaseURL = "https://hub.docker.com"
 
-// dockerHub, Docker Hub'ın kendi (tescilli) hub.docker.com/v2 API'sini
-// kullanır. Bu API tek çağrıda tag + platform + tarih verdiği için Inspect
-// ağa hiç çıkmaz: sayfalama sırasında biriken kayıtları okur.
+// dockerHub uses Docker Hub's own (proprietary) hub.docker.com/v2 API. That
+// API answers with tag, platform and date in one call, so Inspect never hits
+// the network: it reads the records collected while paging.
 type dockerHub struct {
-	// nameFilter, API'nin sunucu tarafı `name=` substring filtresine gider.
+	// nameFilter goes to the API's server-side `name=` substring filter.
 	nameFilter string
-	// seen, sayfalama sırasında görülen ham kayıtlar (tag adı -> kayıt).
+	// seen holds the raw records observed while paging (tag name -> record).
 	seen map[string]hubTag
-	// baseURL, API kökü; yalnız testlerde değiştirilir.
+	// baseURL is the API root; only tests change it.
 	baseURL string
 }
 
@@ -60,12 +56,12 @@ func newDockerHub(nameFilter string) *dockerHub {
 
 func (h *dockerHub) Name() string { return "docker hub" }
 
-// NewestFirst: sorgu ordering=last_updated ile yapıldığı için ilk sayfa en
-// yeni tag'leri taşır.
+// NewestFirst: the query uses ordering=last_updated, so the first page carries
+// the newest tags.
 func (h *dockerHub) NewestFirst() bool { return true }
 
 func (h *dockerHub) Tags(repo string) TagPager {
-	// Docker Hub'da tek parçalı isimler "library" namespace'inde durur.
+	// On Docker Hub a single-component name lives in the "library" namespace.
 	if !strings.Contains(repo, "/") {
 		repo = "library/" + repo
 	}
@@ -89,13 +85,13 @@ func (h *dockerHub) Tags(repo string) TagPager {
 func (h *dockerHub) Inspect(_ context.Context, _, tag string) (TagInfo, error) {
 	t, ok := h.seen[tag]
 	if !ok {
-		return TagInfo{}, fmt.Errorf("%s: tag sayfalarda görülmedi", tag)
+		return TagInfo{}, fmt.Errorf("%s: tag was not seen while paging", tag)
 	}
 
 	info := TagInfo{Tag: t.Name, LastUpdated: t.LastUpdated}
 	switch t.ContentType {
 	case "plugin":
-		// Plugin kayıtları mimari listesi taşımaz.
+		// Plugin records carry no architecture list.
 		info.AnyPlatform = true
 	case "image":
 		for _, img := range t.Images {
@@ -108,7 +104,7 @@ func (h *dockerHub) Inspect(_ context.Context, _, tag string) (TagInfo, error) {
 	return info, nil
 }
 
-// hubPager, yanıttaki "next" alanını izleyerek sayfaları dolaşır.
+// hubPager walks the pages by following the "next" field in the response.
 type hubPager struct {
 	hub  *dockerHub
 	url  string
@@ -153,25 +149,25 @@ func (h *dockerHub) fetch(ctx context.Context, repoURL string) (*hubResponse, er
 	}
 	defer resp.Body.Close()
 
-	// Durum kodu kontrol edilmezse 404/429 gövdesi ({"message": ...}) sorunsuz
-	// decode olur, Results boş kalır ve gerçek sebep "Bulunamadı" olarak
-	// gizlenir.
+	// Without a status check a 404 or 429 body ({"message": ...}) decodes
+	// cleanly, Results stays empty, and the real reason is hidden behind
+	// "Not found".
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		if msg := apiMessage(body); msg != "" {
 			return nil, fmt.Errorf("%s HTTP %d: %s", h.Name(), resp.StatusCode, msg)
 		}
-		return nil, fmt.Errorf("%s HTTP %d: beklenmeyen yanıt", h.Name(), resp.StatusCode)
+		return nil, fmt.Errorf("%s HTTP %d: unexpected response", h.Name(), resp.StatusCode)
 	}
 
 	var r hubResponse
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: could not read the tag list: %w", h.Name(), err)
 	}
 	return &r, nil
 }
 
-// apiMessage, Docker Hub hata gövdesindeki açıklamayı çıkarır.
+// apiMessage extracts the description from a Docker Hub error body.
 func apiMessage(body []byte) string {
 	var e struct {
 		Message string `json:"message"`
@@ -186,24 +182,24 @@ func apiMessage(body []byte) string {
 	return e.Detail
 }
 
-// requiredLiteral, re'nin HER eşleşmesinde bulunmak zorunda olan bir literal
-// parçayı döndürür (yoksa ""). Sonuç Docker Hub'ın `name=` substring filtresine
-// gittiği için yanlış bir literal geçerli tag'leri sessizce gizler; bu yüzden
-// sadece zorunlu düğümlere inilir. Alternation ve opsiyonel gruplar atlanır:
-// "alpine|bookworm" için "" döner ("alpine" seçilip bookworm tag'lerinin
-// kaybedilmesi yerine). En az 2 karakterli literaller dikkate alınır; daha
-// kısası anlamlı bir filtre üretmez.
+// requiredLiteral returns a literal part that EVERY match of re must contain,
+// or "" when there is none. The result goes to Docker Hub's `name=` substring
+// filter, where a wrong literal would silently hide valid tags, so only nodes
+// that take part in every match are descended into. Alternations and optional
+// groups are skipped: "alpine|bookworm" yields "" rather than picking "alpine"
+// and losing every bookworm tag. Literals shorter than 2 characters are
+// ignored, since they make no useful filter.
 func requiredLiteral(re *syntax.Regexp) string {
 	switch re.Op {
 	case syntax.OpLiteral:
-		// Case-insensitive literal, sunucu tarafı filtreyle uyuşmayabilir.
+		// A case-folded literal may not agree with the server-side filter.
 		if len(re.Rune) < 2 || re.Flags&syntax.FoldCase != 0 {
 			return ""
 		}
 		return string(re.Rune)
 
 	case syntax.OpConcat, syntax.OpCapture, syntax.OpPlus:
-		// Bu düğümler her eşleşmede en az bir kez yer alır.
+		// These nodes appear at least once in every match.
 		for _, sub := range re.Sub {
 			if lit := requiredLiteral(sub); lit != "" {
 				return lit

@@ -41,31 +41,31 @@ func TestHubPagerFollowsNext(t *testing.T) {
 
 	first, err := pager.Next(ctx)
 	if err != nil {
-		t.Fatalf("birinci sayfa: %v", err)
+		t.Fatalf("first page: %v", err)
 	}
 	if len(first) != 1 || first[0] != "1.0.0" {
-		t.Fatalf("birinci sayfa = %v, beklenen [1.0.0]", first)
+		t.Fatalf("first page = %v, want [1.0.0]", first)
 	}
 
 	second, err := pager.Next(ctx)
 	if err != nil {
-		t.Fatalf("ikinci sayfa: %v", err)
+		t.Fatalf("second page: %v", err)
 	}
 	if len(second) != 1 || second[0] != "2.0.0" {
-		t.Fatalf("ikinci sayfa = %v, beklenen [2.0.0]", second)
+		t.Fatalf("second page = %v, want [2.0.0]", second)
 	}
 
 	if done, err := pager.Next(ctx); err != nil || done != nil {
-		t.Fatalf("üçüncü çağrı = (%v, %v), beklenen (nil, nil)", done, err)
+		t.Fatalf("third call = (%v, %v), want (nil, nil)", done, err)
 	}
 
-	// Tek parçalı isim "library" namespace'ine alınmalı.
+	// A single-component name must be moved into the "library" namespace.
 	if !strings.Contains(paths[0], "/v2/repositories/library/traefik/tags") {
-		t.Errorf("istek yolu = %q, library/ öneki bekleniyordu", paths[0])
+		t.Errorf("request path = %q, expected the library/ prefix", paths[0])
 	}
 
-	// Sayfalama sırasında görülen kayıtlar Inspect için saklanmalı: bu sürücüde
-	// Inspect ağa çıkmaz.
+	// Records seen while paging must be kept for Inspect: on this driver
+	// Inspect never hits the network.
 	info, err := hub.Inspect(ctx, "traefik", "1.0.0")
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
@@ -74,19 +74,19 @@ func TestHubPagerFollowsNext(t *testing.T) {
 		t.Errorf("LastUpdated = %q", info.LastUpdated)
 	}
 	if !platformMatches(info, "amd64", "linux") {
-		t.Errorf("amd64/linux eşleşmeliydi: %+v", info.Platforms)
+		t.Errorf("amd64/linux should have matched: %+v", info.Platforms)
 	}
 
-	// status != active olan imaj platform listesine girmemeli.
+	// An image with status != active must not enter the platform list.
 	info, err = hub.Inspect(ctx, "traefik", "2.0.0")
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
 	if platformMatches(info, "amd64", "linux") {
-		t.Errorf("inactive imaj eşleşmemeliydi: %+v", info.Platforms)
+		t.Errorf("an inactive image should not have matched: %+v", info.Platforms)
 	}
 	if !platformMatches(info, "arm64", "linux") {
-		t.Errorf("arm64/linux eşleşmeliydi: %+v", info.Platforms)
+		t.Errorf("arm64/linux should have matched: %+v", info.Platforms)
 	}
 }
 
@@ -99,10 +99,10 @@ func TestHubInspectPluginIgnoresPlatform(t *testing.T) {
 		t.Fatalf("Inspect: %v", err)
 	}
 	if !info.AnyPlatform {
-		t.Error("plugin kaydı AnyPlatform olarak işaretlenmeliydi")
+		t.Error("a plugin record should have been marked AnyPlatform")
 	}
 	if !platformMatches(info, "s390x", "linux") {
-		t.Error("plugin her platformu geçmeliydi")
+		t.Error("a plugin should pass every platform")
 	}
 }
 
@@ -118,13 +118,13 @@ func TestHubFetchSurfacesAPIMessage(t *testing.T) {
 
 	_, err := hub.Tags("x/y").Next(context.Background())
 	if err == nil {
-		t.Fatal("404 için hata bekleniyordu")
+		t.Fatal("expected an error for 404")
 	}
 	if !strings.Contains(err.Error(), "object not found") {
-		t.Errorf("hata = %q, API mesajını taşımalıydı", err)
+		t.Errorf("error = %q, should carry the API message", err)
 	}
 	if !strings.Contains(err.Error(), "404") {
-		t.Errorf("hata = %q, durum kodunu taşımalıydı", err)
+		t.Errorf("error = %q, should carry the status code", err)
 	}
 }
 
@@ -137,12 +137,12 @@ func TestApiMessage(t *testing.T) {
 		{`{"detail":"not found"}`, "not found"},
 		{`{"message":"m","detail":"d"}`, "m"},
 		{`{}`, ""},
-		{`bozuk json`, ""},
+		{`malformed json`, ""},
 	}
 
 	for _, tc := range tests {
 		if got := apiMessage([]byte(tc.body)); got != tc.want {
-			t.Errorf("apiMessage(%s) = %q, beklenen %q", tc.body, got, tc.want)
+			t.Errorf("apiMessage(%s) = %q, want %q", tc.body, got, tc.want)
 		}
 	}
 }
@@ -157,12 +157,12 @@ func TestRequiredLiteral(t *testing.T) {
 		{`-alpine$`, "-alpine"},
 		{`v(\d+)-jammy`, "-jammy"},
 		{`^(\d+)\.(\d+)\.(\d+)-alpine$`, "-alpine"},
-		// Alternation: hiçbir dal zorunlu değil, literal kullanılmamalı.
+		// Alternation: no branch is required, so no literal may be used.
 		{`alpine|bookworm`, ""},
 		{`(alpine|bookworm)$`, ""},
-		// Opsiyonel grup zorunlu değil.
+		// An optional group is not required.
 		{`(-alpine)?$`, ""},
-		// Case-insensitive literal sunucu filtresiyle uyuşmayabilir.
+		// A case-folded literal may not agree with the server-side filter.
 		{`(?i)-ALPINE$`, ""},
 		{``, ""},
 		{`.*`, ""},
@@ -171,10 +171,10 @@ func TestRequiredLiteral(t *testing.T) {
 	for _, tc := range tests {
 		rep, err := syntax.Parse(tc.re, syntax.Perl)
 		if err != nil {
-			t.Fatalf("%q parse edilemedi: %v", tc.re, err)
+			t.Fatalf("%q could not be parsed: %v", tc.re, err)
 		}
 		if got := requiredLiteral(rep.Simplify()); got != tc.want {
-			t.Errorf("requiredLiteral(%q) = %q, beklenen %q", tc.re, got, tc.want)
+			t.Errorf("requiredLiteral(%q) = %q, want %q", tc.re, got, tc.want)
 		}
 	}
 }
