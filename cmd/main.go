@@ -18,6 +18,7 @@ type Config struct {
 	Architecture string
 	OS           string
 	Tag          string
+	Verbose      bool
 }
 
 var (
@@ -45,6 +46,13 @@ func main() {
 				Usage:       "Operating System",
 				Value:       "linux",
 				Destination: &cfg.OS,
+			},
+			&cli.BoolFlag{
+				// Not "v": urfave already uses that as the alias of --version.
+				Name:        "verbose",
+				Aliases:     []string{"V"},
+				Usage:       "Report what the lookup cost",
+				Destination: &cfg.Verbose,
 			},
 		},
 		Action: run,
@@ -86,12 +94,16 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// resolve can take a while, and a silent terminal looks like a hung tool.
 	fmt.Fprintf(os.Stderr, "\nRepo.: %s, Arch.: %s, OS: %s, Filter: %s", name, cfg.Architecture, cfg.OS, cfg.Tag)
 
-	info, err := resolve(ctx, reg, repo, filter, cfg.Architecture, cfg.OS)
+	start := time.Now()
+	info, st, err := resolve(ctx, reg, repo, filter, cfg.Architecture, cfg.OS)
+	spent := time.Since(start)
+
 	if err != nil && !errors.Is(err, ErrNoMatch) {
 		// No blanket wrapper here: every driver already names itself in its
 		// errors, and a generic "request failed" prefix made an
 		// authentication failure read like a network problem.
 		fmt.Fprintln(os.Stderr)
+		reportStats(st, spent)
 		return err
 	}
 
@@ -101,10 +113,12 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// (os.Exit(-1) also produced 255 rather than 1.)
 	if errors.Is(err, ErrNoMatch) {
 		fmt.Fprintf(os.Stderr, ", Not found\n")
+		reportStats(st, spent)
 		os.Exit(1)
 	}
 
 	reportTag(info)
+	reportStats(st, spent)
 	fmt.Fprintf(os.Stdout, "%s:%s", name, info.Tag)
 	return nil
 }
@@ -137,6 +151,34 @@ func isDockerHub(host string) bool {
 		return true
 	}
 	return false
+}
+
+// reportStats explains what the lookup cost, under -verbose. It prints on the
+// failure paths too: a lookup that found nothing, or gave up at the cap, is
+// precisely when the numbers are worth having.
+//
+// Page and lookup counts are what separate a slow registry from a slow
+// strategy. gcr.io answers tags/list with a single response of about 14 MB;
+// public.ecr.aws paginates a far longer list; Docker Hub stops after the first
+// page that matches. Before this flag, telling those apart was guesswork.
+func reportStats(st lookupStats, spent time.Duration) {
+	if !cfg.Verbose {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "  %s, %s, %s, %s, %s\n",
+		count(st.Pages, "page"),
+		count(st.Tags, "tag"),
+		count(st.Candidates, "candidate"),
+		count(st.Lookups, "lookup"),
+		spent.Round(time.Millisecond))
+}
+
+func count(n int, unit string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", unit)
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
 }
 
 // reportTag writes the chosen tag to stderr. Not every registry supplies a

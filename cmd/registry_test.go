@@ -220,7 +220,7 @@ func TestResolveFiltersBeforeInspect(t *testing.T) {
 		},
 	}
 
-	got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+	got, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestResolveMatchesRequestedArch(t *testing.T) {
 		}
 	}
 
-	got, err := resolve(context.Background(), newReg(), "x/y", regexp.MustCompile(`.*`), "arm64", "linux")
+	got, _, err := resolve(context.Background(), newReg(), "x/y", regexp.MustCompile(`.*`), "arm64", "linux")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestResolveStopsPagingWhenNewestFirst(t *testing.T) {
 
 	// When pages arrive newest-first, paging stops at the first match.
 	first := &fakeRegistry{pages: pages, info: info, newestFirst: true}
-	got, err := resolve(context.Background(), first, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+	got, _, err := resolve(context.Background(), first, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestResolveStopsPagingWhenNewestFirst(t *testing.T) {
 
 	// Without an ordering guarantee (OCI Distribution) every page is scanned.
 	all := &fakeRegistry{pages: pages, info: info, newestFirst: false}
-	got, err = resolve(context.Background(), all, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+	got, _, err = resolve(context.Background(), all, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestResolvePrefersPlainRelease(t *testing.T) {
 			},
 		}
 
-		got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+		got, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -332,7 +332,7 @@ func TestResolveStopsAtFirstMatch(t *testing.T) {
 		},
 	}
 
-	if _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux"); err != nil {
+	if _, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -359,7 +359,7 @@ func TestResolveInspectsHighestFirst(t *testing.T) {
 		},
 	}
 
-	got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+	got, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestResolveCapsInspection(t *testing.T) {
 
 	reg := &fakeRegistry{pages: [][]string{names}, newestFirst: false, info: info}
 
-	_, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+	_, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
 	if err == nil {
 		t.Fatal("expected an error once the lookup cap was reached")
 	}
@@ -439,7 +439,7 @@ func TestResolveRejectsBuildIdentifiers(t *testing.T) {
 		},
 	}
 
-	got, err := resolve(context.Background(), reg, "ubi9/ubi", regexp.MustCompile(`.*`), "amd64", "linux")
+	got, _, err := resolve(context.Background(), reg, "ubi9/ubi", regexp.MustCompile(`.*`), "amd64", "linux")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestResolveNoVersionLikeTag(t *testing.T) {
 		info:        map[string]TagInfo{},
 	}
 
-	_, err := resolve(context.Background(), reg, "distroless/base", regexp.MustCompile(`.*`), "amd64", "linux")
+	_, _, err := resolve(context.Background(), reg, "distroless/base", regexp.MustCompile(`.*`), "amd64", "linux")
 	if !errors.Is(err, ErrNoVersion) {
 		t.Fatalf("error = %v, want ErrNoVersion", err)
 	}
@@ -545,7 +545,7 @@ func TestResolveHonoursExplicitTag(t *testing.T) {
 	for _, pattern := range []string{"latest", "^latest$"} {
 		reg.inspected = nil
 
-		got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(pattern), "amd64", "linux")
+		got, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(pattern), "amd64", "linux")
 		if err != nil {
 			t.Fatalf("%q: unexpected error: %v", pattern, err)
 		}
@@ -567,7 +567,7 @@ func TestResolveHonoursExplicitNonVersionTag(t *testing.T) {
 		info:        map[string]TagInfo{"nonroot": linuxTag("nonroot", "amd64")},
 	}
 
-	got, err := resolve(context.Background(), reg, "distroless/base", regexp.MustCompile(`^nonroot$`), "amd64", "linux")
+	got, _, err := resolve(context.Background(), reg, "distroless/base", regexp.MustCompile(`^nonroot$`), "amd64", "linux")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestResolveReportsExcludedTags(t *testing.T) {
 		info:        map[string]TagInfo{},
 	}
 
-	_, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`-rc\d$`), "amd64", "linux")
+	_, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`-rc\d$`), "amd64", "linux")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -599,6 +599,36 @@ func TestResolveReportsExcludedTags(t *testing.T) {
 	}
 }
 
+// TestResolveReportsStats covers the numbers behind -verbose. They exist to
+// answer "why is this slow", so they have to be right: the lookup count in
+// particular is one request per tag on a Distribution registry.
+func TestResolveReportsStats(t *testing.T) {
+	reg := &fakeRegistry{
+		pages: [][]string{
+			{"3.0.0", "2.0.0", "latest"},
+			{"1.0.0", "nonroot"},
+		},
+		newestFirst: false,
+		info: map[string]TagInfo{
+			"3.0.0": linuxTag("3.0.0", "amd64"),
+			"2.0.0": linuxTag("2.0.0", "amd64"),
+			"1.0.0": linuxTag("1.0.0", "amd64"),
+		},
+	}
+
+	_, st, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Two pages, five tags; latest is excluded and nonroot is not a version, so
+	// three candidates remain; the walk stops at the first match.
+	want := lookupStats{Pages: 2, Tags: 5, Candidates: 3, Lookups: 1}
+	if st != want {
+		t.Errorf("stats = %+v, want %+v", st, want)
+	}
+}
+
 func TestResolveNoMatch(t *testing.T) {
 	reg := &fakeRegistry{
 		pages:       [][]string{{"1.0.0"}},
@@ -606,7 +636,7 @@ func TestResolveNoMatch(t *testing.T) {
 		info:        map[string]TagInfo{"1.0.0": linuxTag("1.0.0", "amd64")},
 	}
 
-	_, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`^yok$`), "amd64", "linux")
+	_, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`^yok$`), "amd64", "linux")
 	if !errors.Is(err, ErrNoMatch) {
 		t.Errorf("error = %v, want ErrNoMatch", err)
 	}

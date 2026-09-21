@@ -78,6 +78,22 @@ type Registry interface {
 // ErrNoMatch is returned when no tag passed the filters.
 var ErrNoMatch = errors.New("no matching tag found")
 
+// lookupStats records what a lookup cost. Reported by -verbose, because it is
+// the only way to tell a slow registry from a slow strategy: gcr.io answers
+// tags/list with one response of about 14 MB, public.ecr.aws paginates a much
+// longer list, and until these numbers existed the difference was guesswork.
+type lookupStats struct {
+	// Pages of tag names read from the registry.
+	Pages int
+	// Tags seen across those pages, before any filtering.
+	Tags int
+	// Candidates left after the name filters.
+	Candidates int
+	// Lookups is the number of Inspect calls, each of which costs a request on
+	// a Distribution registry and nothing on Docker Hub.
+	Lookups int
+}
+
 // ErrNoVersion is returned when tags matched the filters but none of them reads
 // as a version, so "the latest one" has no answer. Returning whichever the
 // registry happened to list first would be a guess dressed up as a result.
@@ -190,7 +206,9 @@ var excludeRe = regexp.MustCompile(
 // collected, sorted, and only then looked up from the top down. Inspecting as
 // they arrive instead would cost one request per tag: gcr.io/distroless/base
 // has tens of thousands.
-func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Regexp, arch, osName string) (TagInfo, error) {
+func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Regexp, arch, osName string) (TagInfo, lookupStats, error) {
+	var st lookupStats
+
 	pager := reg.Tags(repo)
 
 	// A filter naming one tag outright is a request for that tag, not a query
@@ -213,11 +231,13 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 	for {
 		names, err := pager.Next(ctx)
 		if err != nil {
-			return TagInfo{}, err
+			return TagInfo{}, st, err
 		}
 		if names == nil {
 			break
 		}
+		st.Pages++
+		st.Tags += len(names)
 
 		page := make([]string, 0, len(names))
 		for _, name := range names {
@@ -248,6 +268,7 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 			sawAVersion = true
 			page = append(page, name)
 		}
+		st.Candidates += len(page)
 
 		if !reg.NewestFirst() {
 			candidates = append(candidates, page...)
@@ -255,9 +276,10 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 		}
 
 		for _, name := range page {
+			st.Lookups++
 			info, err := reg.Inspect(ctx, repo, name)
 			if err != nil {
-				return TagInfo{}, err
+				return TagInfo{}, st, err
 			}
 			if platformMatches(info, arch, osName) {
 				matches = append(matches, info)
@@ -278,14 +300,15 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 				break
 			}
 			if i >= maxInspect {
-				return TagInfo{}, fmt.Errorf(
+				return TagInfo{}, st, fmt.Errorf(
 					"%s: looked up %d of %d candidate tags without finding one for %s/%s; narrow the tag filter",
 					reg.Name(), maxInspect, len(candidates), osName, arch)
 			}
 
+			st.Lookups++
 			info, err := reg.Inspect(ctx, repo, name)
 			if err != nil {
-				return TagInfo{}, err
+				return TagInfo{}, st, err
 			}
 			if platformMatches(info, arch, osName) {
 				matches = append(matches, info)
@@ -296,22 +319,22 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 	if len(matches) == 0 {
 		switch {
 		case !sawAVersion && notAVersion != "":
-			return TagInfo{}, fmt.Errorf(
+			return TagInfo{}, st, fmt.Errorf(
 				"%w: the tags of %s look like %q; add a tag filter to pick one",
 				ErrNoVersion, repo, notAVersion)
 
 		case excluded > 0:
 			// Reported rather than swallowed as "not found": the tags are
 			// there, they were just ruled out.
-			return TagInfo{}, fmt.Errorf(
+			return TagInfo{}, st, fmt.Errorf(
 				"%d tag(s) of %s matched but are excluded as pre-release or floating, such as %q; name the tag exactly to select it",
 				excluded, repo, excludedEg)
 		}
-		return TagInfo{}, ErrNoMatch
+		return TagInfo{}, st, ErrNoMatch
 	}
 
 	sortTags(matches)
-	return matches[0], nil
+	return matches[0], st, nil
 }
 
 // platformMatches reports whether the tag is published for the requested

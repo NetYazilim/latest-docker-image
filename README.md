@@ -8,6 +8,8 @@ or in any registry speaking OCI Distribution.
 Options:
   -arch string    Architecture, default: host architecture
   -os string      Operating System, default: linux
+  -verbose, -V    Report what the lookup cost: pages read, tags seen,
+                  candidates left, manifest lookups, elapsed time
 
 TAG filter options:
   empty                newest tag (pre-release/floating tags excluded)

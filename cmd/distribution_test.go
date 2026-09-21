@@ -199,7 +199,7 @@ func TestDistributionResolveScansAllPages(t *testing.T) {
 	})
 
 	filter := regexp.MustCompile(`^\d+\.\d+\.\d+$`)
-	info, err := resolve(context.Background(), d, "x/y", filter, "amd64", "linux")
+	info, _, err := resolve(context.Background(), d, "x/y", filter, "amd64", "linux")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
