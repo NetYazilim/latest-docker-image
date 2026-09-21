@@ -28,7 +28,7 @@ var (
 func main() {
 	cmd := &cli.Command{
 		Name:    "ldi",
-		Usage:   "Show information about the latest version of a Docker IMAGE in the Docker Hub.",
+		Usage:   "Show information about the latest version of a container IMAGE in Docker Hub or in any registry speaking OCI Distribution.",
 		Version: Version,
 		Flags: []cli.Flag{
 			&cli.StringFlag{

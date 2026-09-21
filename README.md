@@ -1,8 +1,9 @@
 # Latest Docker Image
 ### usage:
 ```
-ldi  [OPTIONS] IMAGE[:TAG]    
-Show information about the latest version of a Docker IMAGE in the Docker Hub.
+ldi  [OPTIONS] [REGISTRY/]IMAGE[:TAG]
+Show information about the latest version of a container IMAGE in Docker Hub
+or in any registry speaking OCI Distribution.
 
 Options:
   -arch string    Architecture, default: host architecture
@@ -18,6 +19,10 @@ TAG filter options:
  ldi grafana/grafana-oss
  ldi grafana/grafana-oss:'(\d+)\.(\d+)\.(\d+)$'
  ldi portainer/portainer-ee:'(\d+)\.(\d+)\.(\d+)-alpine$'
+
+# other registries, over OCI Distribution
+ ldi registry.access.redhat.com/ubi9/ubi:'^9\.[0-9]+$'
+ ldi quay.io/prometheus/node-exporter:'^v(\d+)\.(\d+)\.(\d+)$'
 
 # use ldi with docker client
 docker pull $(ldi traefik:'(\d+)\.(\d+)\.(\d+)$')
@@ -66,9 +71,17 @@ rest of it from stdin, and an `ldi` failure is skipped rather than turned into a
   `-`/`.`/`_` separated part of the tag) and `latest`. Tags ending in
   `-source` are skipped too: Red Hat registries publish a source container
   next to every image (`9.0.0-1468-source`), and it is not runnable.
-- **Only Docker Hub is supported for now.** A reference that names a registry
-  host (`registry.redhat.io/ubi9/ubi`, `quay.io/prometheus/node-exporter`) or
-  pins an `@sha256:...` digest is parsed correctly but rejected with an
-  explicit error, instead of being silently queried against Docker Hub.
+- **Registries.** A bare name, or a `docker.io/...` reference, goes to Docker
+  Hub's own API, which answers with tag, platform and date in a single call. Any
+  other host is spoken to over OCI Distribution: `registry.access.redhat.com`,
+  `quay.io`, `ghcr.io`, Harbor and so on. Only anonymous access is supported so
+  far, so a registry that requires a login (`registry.redhat.io`) says exactly
+  that instead of returning a tag. An `@sha256:...` digest is parsed but
+  rejected.
+- The name written to stdout always carries the host, so
+  `docker pull $(ldi quay.io/prometheus/node-exporter:'^v(\d+)\.(\d+)\.(\d+)$')`
+  works. Where a registry cannot supply a date cheaply the tag line reports the
+  manifest digest instead of an update time - a multi-architecture index
+  carries no date at all.
 - When no matching tag is found, ldi writes **nothing** to stdout and exits with
   code 1, so `docker pull $(ldi ...)` will not run with a bogus argument.
