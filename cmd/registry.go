@@ -66,9 +66,15 @@ var ErrNoMatch = errors.New("eşleşen tag bulunamadı")
 // excludeRe, ön-sürüm ve kayan (floating) tag'leri eler. Kalıp sınırlara
 // bağlıdır: sınırsız `rc` deseni "torch", "arch", "source" gibi geçerli
 // tag'leri de sessizce düşürüyordu.
+//
+// "-source" ayrıca elenir: Red Hat registry'lerinde her imajın yanında bir
+// kaynak konteyneri yayınlanıyor (ör. "9.0.0-1468-source") ve bunlar
+// çalıştırılabilir imaj değil. Sınırsız `rc` deseni bunları tesadüfen
+// eliyordu ("source" içinde "rc" geçiyor); artık açıkça belirtiliyor.
 var excludeRe = regexp.MustCompile(
 	`(?i)(^|[-._])(alpha|beta|rc|pre|preview|dev|snapshot|nightly|canary|edge)([-._0-9]|$)` +
-		`|^latest([-._]|$)`)
+		`|^latest([-._]|$)` +
+		`|[-._]source$`)
 
 // resolve, ortak seçim hattıdır: isimleri sayfala, isim üzerinden filtrele,
 // yalnız filtreyi geçenlerin platformunu sorgula, sırala ve en uygun tag'i

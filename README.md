@@ -11,7 +11,7 @@ Options:
 TAG filter options:
   empty                newest tag (pre-release/floating tags excluded)
   regular expression   tag filter - anchor it with $, see Notes
-  @DIGEST              a specific digest (not implemented yet)
+  @DIGEST              a specific digest (not supported yet; rejected)
 ```
 ### example:
 ```
@@ -48,6 +48,12 @@ done < image-list.txt
   `1.25.1`.
 - Pre-release and floating tags are always skipped: `alpha`, `beta`, `rc`,
   `pre`, `preview`, `dev`, `snapshot`, `nightly`, `canary`, `edge` (as a
-  `-`/`.`/`_` separated part of the tag) and `latest`.
+  `-`/`.`/`_` separated part of the tag) and `latest`. Tags ending in
+  `-source` are skipped too: Red Hat registries publish a source container
+  next to every image (`9.0.0-1468-source`), and it is not runnable.
+- **Only Docker Hub is supported for now.** A reference that names a registry
+  host (`registry.redhat.io/ubi9/ubi`, `quay.io/prometheus/node-exporter`) or
+  pins an `@sha256:...` digest is parsed correctly but rejected with an
+  explicit error, instead of being silently queried against Docker Hub.
 - When no matching tag is found, ldi writes **nothing** to stdout and exits with
   code 1, so `docker pull $(ldi ...)` will not run with a bogus argument.

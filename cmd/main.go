@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"runtime"
-	"strings"
 	"time"
 
 	cli "github.com/urfave/cli/v3"
@@ -23,7 +22,7 @@ type Config struct {
 
 var (
 	cfg     Config
-	Version = "1.5.2"
+	Version = "1.6.0"
 )
 
 func main() {
@@ -60,12 +59,21 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	repo := cmd.Args().First()
-
-	if strings.Contains(repo, ":") {
-		cfg.Tag = strings.Split(repo, ":")[1]
-		repo = strings.Split(repo, ":")[0]
+	ref, err := ParseReference(cmd.Args().First())
+	if err != nil {
+		return err
 	}
+	if ref.Digest != "" {
+		return fmt.Errorf("@digest ile sabit referans desteklenmiyor: %s", ref.Digest)
+	}
+	if ref.Host != "" {
+		// Faz 1'de OCI Distribution sürücüsü burayı dolduracak. O zamana kadar
+		// sessizce Docker Hub'a sormak yerine açıkça söylüyoruz.
+		return fmt.Errorf("%s: bu registry için sürücü yok, şimdilik yalnız Docker Hub destekleniyor", ref.Host)
+	}
+
+	repo := ref.Repo
+	cfg.Tag = ref.Filter
 
 	filter, err := regexp.Compile(cfg.Tag)
 	if err != nil {

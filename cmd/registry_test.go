@@ -96,6 +96,9 @@ func TestExcludeRe(t *testing.T) {
 		"latest", "latest-alpine", "1.0.0-beta", "1.0.0-beta1", "2.1-rc",
 		"3.0.0-rc2", "1.0.0.dev0", "1.0-alpha", "edge", "v2-nightly",
 		"1.0.0-SNAPSHOT", "1.0.0-PRE", "1.0.0-preview3",
+		// Red Hat kaynak konteynerleri.
+		"1780376659-source", "9.0.0-1468-source", "1.0.0-source",
+		"9.0.0-1468.1655190709-source",
 	}
 	gecmeli := []string{
 		"1.0.0", "1.25.1", "11.6.6-security-01", "1.22-alpine", "torch-1.0",
@@ -209,8 +212,9 @@ func TestResolveStopsPagingWhenNewestFirst(t *testing.T) {
 	if got.Tag != "9.9.9" {
 		t.Errorf("tag = %s, beklenen 9.9.9", got.Tag)
 	}
-	if all.pagesRead != 3 {
-		t.Errorf("okunan sayfa = %d, beklenen 3 (iki sayfa + bitiş)", all.pagesRead)
+	// İki sayfa okunur; sayfaların bittiğini bildiren nil çağrısı sayılmıyor.
+	if all.pagesRead != 2 {
+		t.Errorf("okunan sayfa = %d, beklenen 2", all.pagesRead)
 	}
 }
 
