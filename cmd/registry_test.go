@@ -221,35 +221,37 @@ func TestResolveStopsPagingWhenNewestFirst(t *testing.T) {
 	}
 }
 
-// TestResolvePrefersLongerPrefix documents the existing "prefix plus longer"
-// heuristic: semver puts a prerelease below the plain release, so the order is
-// 1.2.3 then 1.2.3-alpine and the rule picks the variant. The behaviour is
-// kept deliberately.
-func TestResolvePrefersLongerPrefix(t *testing.T) {
-	reg := &fakeRegistry{
-		pages:       [][]string{{"1.2.3", "1.2.3-alpine"}},
-		newestFirst: true,
-		info: map[string]TagInfo{
-			"1.2.3":        linuxTag("1.2.3", "amd64"),
-			"1.2.3-alpine": linuxTag("1.2.3-alpine", "amd64"),
-		},
-	}
+// TestResolvePrefersPlainRelease pins the behaviour that replaced the old
+// "prefix plus longer" heuristic. That rule preferred a suffixed tag over the
+// release it was built from, which is how `ldi grafana/loki` came back with
+// 3.7.8-amd64 - a single-architecture image - instead of 3.7.8.
+func TestResolvePrefersPlainRelease(t *testing.T) {
+	for _, variant := range []string{"1.2.3-alpine", "1.2.3-amd64"} {
+		reg := &fakeRegistry{
+			pages:       [][]string{{"1.2.3", variant}},
+			newestFirst: true,
+			info: map[string]TagInfo{
+				"1.2.3": linuxTag("1.2.3", "amd64"),
+				variant: linuxTag(variant, "amd64"),
+			},
+		}
 
-	got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Tag != "1.2.3-alpine" {
-		t.Errorf("tag = %s, want 1.2.3-alpine", got.Tag)
+		got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Tag != "1.2.3" {
+			t.Errorf("with %s present, tag = %s, want 1.2.3", variant, got.Tag)
+		}
 	}
 }
 
-// TestResolveStopsAfterEnoughMatches covers the lazy path taken by a driver
-// that cannot order its tags: the candidates are looked up from the top of the
-// sorted list and the walk stops once the best tag and its runner-up are in
-// hand. The names are already in descending order, so the assertion holds
+// TestResolveStopsAtFirstMatch covers the lazy path taken by a driver that
+// cannot order its tags: the candidates are looked up from the top of the
+// sorted list and the walk stops at the first one published for the requested
+// platform. The names are already in descending order, so the assertion holds
 // whether or not the sort reorders them.
-func TestResolveStopsAfterEnoughMatches(t *testing.T) {
+func TestResolveStopsAtFirstMatch(t *testing.T) {
 	reg := &fakeRegistry{
 		pages:       [][]string{{"3.0.0", "2.0.0", "1.0.0"}},
 		newestFirst: false,
@@ -264,11 +266,13 @@ func TestResolveStopsAfterEnoughMatches(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(reg.inspected) != enoughMatches {
-		t.Errorf("inspected %v, want exactly %d lookups", reg.inspected, enoughMatches)
+	if len(reg.inspected) != 1 {
+		t.Errorf("inspected %v, want exactly one lookup", reg.inspected)
 	}
-	if slices.Contains(reg.inspected, "1.0.0") {
-		t.Errorf("the third candidate should never have been looked up: %v", reg.inspected)
+	for _, unwanted := range []string{"2.0.0", "1.0.0"} {
+		if slices.Contains(reg.inspected, unwanted) {
+			t.Errorf("%s should never have been looked up: %v", unwanted, reg.inspected)
+		}
 	}
 }
 
@@ -292,7 +296,7 @@ func TestResolveInspectsHighestFirst(t *testing.T) {
 	if got.Tag != "3.0.0" {
 		t.Errorf("tag = %s, want 3.0.0", got.Tag)
 	}
-	if want := []string{"3.0.0", "2.0.0"}; !slices.Equal(reg.inspected, want) {
+	if want := []string{"3.0.0"}; !slices.Equal(reg.inspected, want) {
 		t.Errorf("inspected %v, want %v", reg.inspected, want)
 	}
 }
@@ -425,7 +429,7 @@ func TestSortTagsBreaksTiesByDate(t *testing.T) {
 	}
 }
 
-func TestNamesOneTag(t *testing.T) {
+func TestNamedTag(t *testing.T) {
 	// A filter that names one tag: the exclusion rules must step aside.
 	explicit := []string{"latest", "^latest$", "stable", "^stable$", "nonroot", `^1\.2\.3$`}
 	// A filter that selects among tags, or no filter at all: the rules apply.
@@ -435,35 +439,52 @@ func TestNamesOneTag(t *testing.T) {
 	}
 
 	for _, p := range explicit {
-		if !namesOneTag(regexp.MustCompile(p)) {
+		if _, ok := namedTag(regexp.MustCompile(p)); !ok {
 			t.Errorf("%q names one tag outright", p)
 		}
 	}
 	for _, p := range general {
-		if namesOneTag(regexp.MustCompile(p)) {
-			t.Errorf("%q selects among tags and must keep the rules", p)
+		if name, ok := namedTag(regexp.MustCompile(p)); ok {
+			t.Errorf("%q selects among tags and must keep the rules, got %q", p, name)
 		}
+	}
+
+	// The name has to come back unadorned, since it is compared for equality.
+	if name, _ := namedTag(regexp.MustCompile(`^latest$`)); name != "latest" {
+		t.Errorf("name = %q, want latest", name)
 	}
 }
 
 // TestResolveHonoursExplicitTag is the reported bug: latest is on the exclusion
 // list, so asking for it by name answered "not found" for a tag that exists.
 func TestResolveHonoursExplicitTag(t *testing.T) {
+	// latest-amd64 is here on purpose: a bare "latest" filter is an unanchored
+	// regex, so matching with it used to accept the variant, and the prefix
+	// rule then preferred it. grafana/loki answered latest-amd64 that way.
 	reg := &fakeRegistry{
-		pages:       [][]string{{"latest", "1.0.0"}},
+		pages:       [][]string{{"latest", "latest-amd64", "latest-arm64", "1.0.0"}},
 		newestFirst: false,
 		info: map[string]TagInfo{
-			"latest": linuxTag("latest", "amd64"),
-			"1.0.0":  linuxTag("1.0.0", "amd64"),
+			"latest":       linuxTag("latest", "amd64"),
+			"latest-amd64": linuxTag("latest-amd64", "amd64"),
+			"latest-arm64": linuxTag("latest-arm64", "amd64"),
+			"1.0.0":        linuxTag("1.0.0", "amd64"),
 		},
 	}
 
-	got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`^latest$`), "amd64", "linux")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Tag != "latest" {
-		t.Errorf("tag = %s, want latest", got.Tag)
+	for _, pattern := range []string{"latest", "^latest$"} {
+		reg.inspected = nil
+
+		got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(pattern), "amd64", "linux")
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", pattern, err)
+		}
+		if got.Tag != "latest" {
+			t.Errorf("%q: tag = %s, want latest", pattern, got.Tag)
+		}
+		if len(reg.inspected) != 1 {
+			t.Errorf("%q: looked up %v, want only the named tag", pattern, reg.inspected)
+		}
 	}
 }
 

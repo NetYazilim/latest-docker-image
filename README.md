@@ -63,9 +63,15 @@ rest of it from stdin, and an `ldi` failure is skipped rather than turned into a
 
 ## Notes
 - **Anchor version filters with `$`.** An unanchored `'(\d+)\.(\d+)\.(\d+)'`
-  also matches variant tags such as `1.25.1-alpine`, and ldi may then return the
-  variant instead of the plain version. Use `'(\d+)\.(\d+)\.(\d+)$'` to get
-  `1.25.1`.
+  also matches variant tags such as `1.25.1-alpine`. Between two tags of the
+  same version the plain release wins, but a variant of a *higher* version does
+  not: with `1.26.0-alpine` published and plain releases still at `1.25.1`, the
+  unanchored filter returns the alpine image. Use
+  `'(\d+)\.(\d+)\.(\d+)$'` for plain releases and
+  `'(\d+)\.(\d+)\.(\d+)-alpine$'` for the variant.
+- **Pin the major version to stay on a release line.**
+  `'^2\.(\d+)\.(\d+)$'` tracks 2.x.x and never follows the repository to
+  3.x. Escape the dot: `'^2.(\d+)'` would also match `2X5`.
 - Pre-release and floating tags are always skipped: `alpha`, `beta`, `rc`,
   `pre`, `preview`, `dev`, `snapshot`, `nightly`, `canary`, `edge` (as a
   `-`/`.`/`_` separated part of the tag) and `latest`. Tags ending in

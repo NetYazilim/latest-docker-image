@@ -83,11 +83,6 @@ var ErrNoMatch = errors.New("no matching tag found")
 var ErrNoVersion = errors.New("no version-like tag found")
 
 const (
-	// enoughMatches is how many platform matches resolve needs before it can
-	// stop looking: the best tag, plus the runner-up the prefix rule may
-	// prefer over it.
-	enoughMatches = 2
-
 	// maxInspect bounds how many candidate tags resolve will look up on a
 	// registry that cannot order them for us, so that a repository with tens of
 	// thousands of tags fails fast with advice instead of issuing one request
@@ -108,21 +103,27 @@ const (
 // version shapes there is.
 var versionRe = regexp.MustCompile(`^v?\d+(\.\d+)*([-+].*)?$`)
 
-// namesOneTag reports whether the filter picks out a single tag by name, in
-// which case the user has said which tag they want and the exclusion rules step
-// aside: `ldi gcr.io/distroless/base:latest` used to answer "not found" for a
-// tag that plainly exists, because latest is on the exclusion list.
+// namedTag returns the one tag a filter asks for by name, if it does. The user
+// has then said which tag they want, so the exclusion rules and the
+// version-like requirement step aside: `ldi gcr.io/distroless/base:latest` used
+// to answer "not found" for a tag that plainly exists, because latest is on the
+// exclusion list.
 //
 // A complete literal is the test - "latest", "^latest$", "^1\.2\.3$" - so every
-// pattern that actually selects among tags keeps the rules. Note that an empty
+// pattern that actually selects among tags keeps the rules. Two traps: the empty
 // pattern also reports complete, which is the opposite of an explicit request,
-// so it is rejected first.
-func namesOneTag(filter *regexp.Regexp) bool {
+// and a bare literal is an UNANCHORED regex, so matching with it would accept
+// any tag containing the word. `ldi grafana/loki:latest` answered latest-amd64
+// that way. The returned name is therefore compared for equality, not matched.
+func namedTag(filter *regexp.Regexp) (string, bool) {
 	if filter.String() == "" {
-		return false
+		return "", false
 	}
-	_, complete := filter.LiteralPrefix()
-	return complete
+	name, complete := filter.LiteralPrefix()
+	if !complete {
+		return "", false
+	}
+	return name, true
 }
 
 // isVersionLike reports whether a tag reads as a version rather than as a build
@@ -193,7 +194,7 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 
 	// A filter naming one tag outright is a request for that tag, not a query
 	// to be second-guessed.
-	explicit := namesOneTag(filter)
+	wanted, explicit := namedTag(filter)
 
 	var (
 		matches    []TagInfo
@@ -219,27 +220,31 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 
 		page := make([]string, 0, len(names))
 		for _, name := range names {
-			if !filter.MatchString(name) {
+			if explicit {
+				if name == wanted {
+					page = append(page, name)
+				}
 				continue
 			}
 
-			if !explicit {
-				if excludeRe.MatchString(name) {
-					excluded++
-					if excludedEg == "" {
-						excludedEg = name
-					}
-					continue
+			if !filter.MatchString(name) {
+				continue
+			}
+			if excludeRe.MatchString(name) {
+				excluded++
+				if excludedEg == "" {
+					excludedEg = name
 				}
-				if !isVersionLike(name) {
-					if notAVersion == "" {
-						notAVersion = name
-					}
-					continue
+				continue
+			}
+			if !isVersionLike(name) {
+				if notAVersion == "" {
+					notAVersion = name
 				}
-				sawAVersion = true
+				continue
 			}
 
+			sawAVersion = true
 			page = append(page, name)
 		}
 
@@ -266,7 +271,9 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 		sortTagNames(candidates)
 
 		for i, name := range candidates {
-			if len(matches) >= enoughMatches {
+			// The list is sorted, so the first tag published for the requested
+			// platform is the answer; there is nothing a later one could win.
+			if len(matches) > 0 {
 				break
 			}
 			if i >= maxInspect {
@@ -303,19 +310,7 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 	}
 
 	sortTags(matches)
-
-	best := matches[0]
-	if len(matches) > 1 {
-		next := matches[1]
-		// Prefer the more specific one for cases like "1.0" and "1.0.1".
-		// NOTE: combined with semver ordering this rule can pick
-		// "1.2.3-alpine" over "1.2.3". The behaviour is kept deliberately;
-		// the README recommends anchoring the regex with `$`.
-		if strings.HasPrefix(next.Tag, best.Tag) && len(next.Tag) > len(best.Tag) {
-			best = next
-		}
-	}
-	return best, nil
+	return matches[0], nil
 }
 
 // platformMatches reports whether the tag is published for the requested
