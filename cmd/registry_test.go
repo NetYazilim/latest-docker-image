@@ -247,16 +247,16 @@ func TestResolvePrefersLongerPrefix(t *testing.T) {
 // TestResolveStopsAfterEnoughMatches covers the lazy path taken by a driver
 // that cannot order its tags: the candidates are looked up from the top of the
 // sorted list and the walk stops once the best tag and its runner-up are in
-// hand. Every name here compares equal, so the sort is stable and the input
-// order is the lookup order, which keeps the assertion independent of semver.
+// hand. The names are already in descending order, so the assertion holds
+// whether or not the sort reorders them.
 func TestResolveStopsAfterEnoughMatches(t *testing.T) {
 	reg := &fakeRegistry{
-		pages:       [][]string{{"aaa", "bbb", "ccc"}},
+		pages:       [][]string{{"3.0.0", "2.0.0", "1.0.0"}},
 		newestFirst: false,
 		info: map[string]TagInfo{
-			"aaa": linuxTag("aaa", "amd64"),
-			"bbb": linuxTag("bbb", "amd64"),
-			"ccc": linuxTag("ccc", "amd64"),
+			"3.0.0": linuxTag("3.0.0", "amd64"),
+			"2.0.0": linuxTag("2.0.0", "amd64"),
+			"1.0.0": linuxTag("1.0.0", "amd64"),
 		},
 	}
 
@@ -267,7 +267,7 @@ func TestResolveStopsAfterEnoughMatches(t *testing.T) {
 	if len(reg.inspected) != enoughMatches {
 		t.Errorf("inspected %v, want exactly %d lookups", reg.inspected, enoughMatches)
 	}
-	if slices.Contains(reg.inspected, "ccc") {
+	if slices.Contains(reg.inspected, "1.0.0") {
 		t.Errorf("the third candidate should never have been looked up: %v", reg.inspected)
 	}
 }
@@ -304,7 +304,7 @@ func TestResolveCapsInspection(t *testing.T) {
 	var names []string
 	info := map[string]TagInfo{}
 	for i := 0; i < maxInspect+10; i++ {
-		name := fmt.Sprintf("t%03d", i)
+		name := fmt.Sprintf("1.0.%d", i)
 		names = append(names, name)
 		// Published, but never for the platform being asked about.
 		info[name] = linuxTag(name, "s390x")
@@ -321,6 +321,107 @@ func TestResolveCapsInspection(t *testing.T) {
 	}
 	if len(reg.inspected) != maxInspect {
 		t.Errorf("made %d lookups, want the cap of %d", len(reg.inspected), maxInspect)
+	}
+}
+
+func TestIsVersionLike(t *testing.T) {
+	versions := []string{
+		"1.0.0", "9.8", "v2.63.23", "1.37.1-alpine", "11.6.6-security-01",
+		"24.04", "9.0.0-1468.1655190709", "3.7.8", "2.45.1-alpine",
+		// Bare major versions are real: node:22, python:3, ubuntu:24.
+		"3", "22", "24", "2024", "v22",
+	}
+	buildIDs := []string{
+		// Epoch stamps and dates, which semver would read as enormous majors.
+		"1789646103", "1780376659", "20250101", "1788245146",
+		// Commit hashes, as gcr.io/distroless tags its images.
+		"0093a0209f695c939427fd207c933bdbadcf7301",
+		// Names, not versions.
+		"nonroot", "debug", "base-debian10", "stable",
+	}
+
+	for _, tag := range versions {
+		if !isVersionLike(tag) {
+			t.Errorf("%q should read as a version", tag)
+		}
+	}
+	for _, tag := range buildIDs {
+		if isVersionLike(tag) {
+			t.Errorf("%q should not read as a version", tag)
+		}
+	}
+}
+
+// TestResolveRejectsBuildIdentifiers is the ubi9/ubi case: an epoch tag sits
+// beside the real releases and semver would rank it above all of them.
+func TestResolveRejectsBuildIdentifiers(t *testing.T) {
+	reg := &fakeRegistry{
+		pages:       [][]string{{"1789646103", "9.6", "9.8"}},
+		newestFirst: false,
+		info: map[string]TagInfo{
+			"1789646103": linuxTag("1789646103", "amd64"),
+			"9.6":        linuxTag("9.6", "amd64"),
+			"9.8":        linuxTag("9.8", "amd64"),
+		},
+	}
+
+	got, err := resolve(context.Background(), reg, "ubi9/ubi", regexp.MustCompile(`.*`), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Tag == "1789646103" {
+		t.Error("an epoch stamp was returned as the latest version")
+	}
+	if slices.Contains(reg.inspected, "1789646103") {
+		t.Errorf("the epoch stamp should not even be looked up: %v", reg.inspected)
+	}
+}
+
+// TestResolveNoVersionLikeTag is the gcr.io/distroless case: every tag is a
+// commit hash, so there is no latest version to report.
+func TestResolveNoVersionLikeTag(t *testing.T) {
+	const hash = "0093a0209f695c939427fd207c933bdbadcf7301"
+
+	reg := &fakeRegistry{
+		pages:       [][]string{{hash, "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"}},
+		newestFirst: false,
+		info:        map[string]TagInfo{},
+	}
+
+	_, err := resolve(context.Background(), reg, "distroless/base", regexp.MustCompile(`.*`), "amd64", "linux")
+	if !errors.Is(err, ErrNoVersion) {
+		t.Fatalf("error = %v, want ErrNoVersion", err)
+	}
+	// The message has to show what the tags look like, or the advice to add a
+	// filter is unusable.
+	if !strings.Contains(err.Error(), hash) {
+		t.Errorf("error = %q, should quote an example tag", err)
+	}
+	if len(reg.inspected) != 0 {
+		t.Errorf("nothing should be looked up: %v", reg.inspected)
+	}
+}
+
+// TestSortTagsBreaksTiesByDate covers the Docker Hub tie-break: "1.2.3" and
+// "v1.2.3" are the same version under semver, so the more recently updated one
+// wins. Distribution leaves the date empty and those keep their order.
+func TestSortTagsBreaksTiesByDate(t *testing.T) {
+	tags := []TagInfo{
+		{Tag: "1.2.3", LastUpdated: "2024-01-02T03:04:05Z"},
+		{Tag: "v1.2.3", LastUpdated: "2025-06-07T08:09:10Z"},
+	}
+
+	sortTags(tags)
+
+	if tags[0].Tag != "v1.2.3" {
+		t.Errorf("order = %s then %s, want the newer v1.2.3 first", tags[0].Tag, tags[1].Tag)
+	}
+
+	// With no dates at all the order must simply be stable.
+	undated := []TagInfo{{Tag: "1.2.3"}, {Tag: "v1.2.3"}}
+	sortTags(undated)
+	if undated[0].Tag != "1.2.3" {
+		t.Errorf("undated order = %s, want the input order preserved", undated[0].Tag)
 	}
 }
 

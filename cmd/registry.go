@@ -77,6 +77,11 @@ type Registry interface {
 // ErrNoMatch is returned when no tag passed the filters.
 var ErrNoMatch = errors.New("no matching tag found")
 
+// ErrNoVersion is returned when tags matched the filters but none of them reads
+// as a version, so "the latest one" has no answer. Returning whichever the
+// registry happened to list first would be a guess dressed up as a result.
+var ErrNoVersion = errors.New("no version-like tag found")
+
 const (
 	// enoughMatches is how many platform matches resolve needs before it can
 	// stop looking: the best tag, plus the runner-up the prefix rule may
@@ -89,7 +94,49 @@ const (
 	// per tag. gcr.io/distroless/base answers tags/list with ~14 MB of tags,
 	// which is what this guards against.
 	maxInspect = 50
+
+	// maxBareDigits is the longest a dotted-free numeric tag may be and still
+	// count as a version. See isVersionLike.
+	maxBareDigits = 4
 )
+
+// versionRe matches dot-separated numeric segments, optionally v-prefixed and
+// optionally carrying a suffix: 9.8, v2.63.23, 1.37.1-alpine, 24.04.
+//
+// It is deliberately looser than semver, which rejects a leading zero in a
+// segment and would therefore refuse ubuntu:24.04 - one of the most common
+// version shapes there is.
+var versionRe = regexp.MustCompile(`^v?\d+(\.\d+)*([-+].*)?$`)
+
+// isVersionLike reports whether a tag reads as a version rather than as a build
+// identifier.
+//
+// semver accepts a bare integer as a major version, so without this check an
+// epoch stamp parses as a colossal one: registry.access.redhat.com/ubi9/ubi
+// publishes 1789646103 beside 9.8, and v1789646103.0.0 outranks every real
+// release. Four digits is the cut-off for a single segment, because node:22,
+// python:3 and ubuntu:24 are genuine major versions while 20250101 and
+// 1789646103 are a date and an epoch.
+//
+// Tags that are not numeric at all fail here too, which is what stops a
+// repository tagged by commit hash (gcr.io/distroless) from answering with
+// whichever hash the registry happened to list first.
+func isVersionLike(tag string) bool {
+	if !versionRe.MatchString(tag) {
+		return false
+	}
+
+	// Judge the release part only; a suffix cannot turn a build id into a
+	// version.
+	core := strings.TrimPrefix(tag, "v")
+	if i := strings.IndexAny(core, "-+"); i != -1 {
+		core = core[:i]
+	}
+	if strings.Contains(core, ".") {
+		return true
+	}
+	return len(core) <= maxBareDigits
+}
 
 // excludeRe drops tags that are never the answer: pre-release and floating
 // tags, source containers, and signature or attestation artifacts. The pattern
@@ -130,6 +177,12 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 	var (
 		matches    []TagInfo
 		candidates []string
+
+		// Remembered for the ErrNoVersion message: what the tags in this
+		// repository actually look like, and whether any of them was a version
+		// at all.
+		notAVersion string
+		sawAVersion bool
 	)
 
 	for {
@@ -143,9 +196,17 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 
 		page := make([]string, 0, len(names))
 		for _, name := range names {
-			if filter.MatchString(name) && !excludeRe.MatchString(name) {
-				page = append(page, name)
+			if !filter.MatchString(name) || excludeRe.MatchString(name) {
+				continue
 			}
+			if !isVersionLike(name) {
+				if notAVersion == "" {
+					notAVersion = name
+				}
+				continue
+			}
+			sawAVersion = true
+			page = append(page, name)
 		}
 
 		if !reg.NewestFirst() {
@@ -191,6 +252,11 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 	}
 
 	if len(matches) == 0 {
+		if !sawAVersion && notAVersion != "" {
+			return TagInfo{}, fmt.Errorf(
+				"%w: the tags of %s look like %q; add a tag filter to pick one",
+				ErrNoVersion, repo, notAVersion)
+		}
 		return TagInfo{}, ErrNoMatch
 	}
 
@@ -225,9 +291,18 @@ func platformMatches(info TagInfo, arch, osName string) bool {
 }
 
 // sortTags orders tags newest first, highest version at the front.
+//
+// Equal versions are settled by date where the driver supplied one, which in
+// practice means Docker Hub: its API returns last_updated in the same call, so
+// the tie-break is free there. OCI Distribution reports no date for a
+// multi-architecture index, and those entries simply keep their relative order.
+// RFC 3339 timestamps compare correctly as plain strings.
 func sortTags(tags []TagInfo) {
 	slices.SortFunc(tags, func(a, b TagInfo) int {
-		return compareTags(a.Tag, b.Tag)
+		if c := compareTags(a.Tag, b.Tag); c != 0 {
+			return c
+		}
+		return -strings.Compare(a.LastUpdated, b.LastUpdated)
 	})
 }
 
