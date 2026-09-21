@@ -10,7 +10,10 @@
 # The -X path must be "main.Version". The fully qualified form
 # "latest-docker-image/cmd.Version" is accepted by the linker and then silently
 # ignored, leaving the default from the source in the binary.
-set -euo pipefail
+#
+# Kept POSIX so it runs under sh as well as bash: there are no pipelines here,
+# so pipefail would buy nothing and dash rejects it outright.
+set -eu
 
 cd "$(dirname "$0")"
 
@@ -29,7 +32,7 @@ build() {
 echo "building ldi ${VERSION}"
 
 build linux   amd64 ./bin/ldi-linux
-build windows amd64 ./bin/ldi-windows.exe
-# build darwin  amd64 ./bin/ldi-macos
-# build darwin  arm64 ./bin/ldi-macos-arm64
+build windows amd64 ./bin/ldi.exe
+build darwin  amd64 ./bin/ldi-macos
+build darwin  arm64 ./bin/ldi-macos-arm64
 # build linux   arm64 ./bin/ldi-linux-arm64
