@@ -241,7 +241,18 @@ func anchoredPrefix(filter *regexp.Regexp) string {
 	if !strings.HasPrefix(filter.String(), "^") {
 		return ""
 	}
-	prefix, _ := filter.LiteralPrefix()
+
+	prefix, complete := filter.LiteralPrefix()
+	if complete {
+		// A complete literal is the tag itself, and last= is exclusive, so
+		// skipping to it would skip the very tag being asked for. One character
+		// short starts the listing just before it instead.
+		r := []rune(prefix)
+		if len(r) < 2 {
+			return ""
+		}
+		prefix = string(r[:len(r)-1])
+	}
 	return prefix
 }
 
@@ -311,6 +322,11 @@ func lookup(ctx context.Context, reg Registry, repo string, filter *regexp.Regex
 
 		if !reg.NewestFirst() {
 			candidates = append(candidates, page...)
+			// An exact name matches at most one tag, so once it is in hand
+			// there is nothing in the rest of the list to find.
+			if explicit && len(candidates) > 0 {
+				break
+			}
 			continue
 		}
 

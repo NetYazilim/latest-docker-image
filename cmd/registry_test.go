@@ -652,7 +652,10 @@ func TestAnchoredPrefix(t *testing.T) {
 		{`^22\.2026\.09\.(\d+)\.(\d+)$`, "22.2026.09."},
 		{`^9\.[0-9]+$`, "9."},
 		{`^v(\d+)\.(\d+)\.(\d+)$`, "v"},
-		{`^latest$`, "latest"},
+		// A complete literal names the tag itself, and last= is exclusive, so
+		// the skip has to stop one character short of it.
+		{`^latest$`, "lates"},
+		{`^9$`, ""},
 		// An unescaped dot is a metacharacter, so the prefix stops before it.
 		// That costs precision, and now it costs speed too.
 		{`^22.2026.09\.(\d+)$`, "22"},
@@ -718,6 +721,28 @@ func TestResolveRereadsWithoutPrefix(t *testing.T) {
 	// the work.
 	if st.Pages != 1 || st.Tags != 2 {
 		t.Errorf("stats = %+v, want the pages and tags of both passes", st)
+	}
+}
+
+// TestResolveStopsOnceNamedTagFound: an exact name can match one tag, so the
+// rest of the list is not worth reading. Without this a named lookup on a large
+// repository read everything after the tag as well.
+func TestResolveStopsOnceNamedTagFound(t *testing.T) {
+	reg := &fakeRegistry{
+		pages:       [][]string{{"latest"}, {"nonroot"}, {"zzz"}},
+		newestFirst: false,
+		info:        map[string]TagInfo{"latest": linuxTag("latest", "amd64")},
+	}
+
+	got, st, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`^latest$`), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Tag != "latest" {
+		t.Errorf("tag = %s, want latest", got.Tag)
+	}
+	if st.Pages != 1 {
+		t.Errorf("read %d pages, want 1: the tag was on the first", st.Pages)
 	}
 }
 
