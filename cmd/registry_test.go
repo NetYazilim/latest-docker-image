@@ -425,6 +425,89 @@ func TestSortTagsBreaksTiesByDate(t *testing.T) {
 	}
 }
 
+func TestNamesOneTag(t *testing.T) {
+	// A filter that names one tag: the exclusion rules must step aside.
+	explicit := []string{"latest", "^latest$", "stable", "^stable$", "nonroot", `^1\.2\.3$`}
+	// A filter that selects among tags, or no filter at all: the rules apply.
+	general := []string{
+		"", ".*", `(\d+)\.(\d+)\.(\d+)`, `^(\d+)\.(\d+)\.(\d+)$`,
+		`-alpine$`, `^v(\d+)\.(\d+)\.(\d+)$`, `^9\.[0-9]+$`,
+	}
+
+	for _, p := range explicit {
+		if !namesOneTag(regexp.MustCompile(p)) {
+			t.Errorf("%q names one tag outright", p)
+		}
+	}
+	for _, p := range general {
+		if namesOneTag(regexp.MustCompile(p)) {
+			t.Errorf("%q selects among tags and must keep the rules", p)
+		}
+	}
+}
+
+// TestResolveHonoursExplicitTag is the reported bug: latest is on the exclusion
+// list, so asking for it by name answered "not found" for a tag that exists.
+func TestResolveHonoursExplicitTag(t *testing.T) {
+	reg := &fakeRegistry{
+		pages:       [][]string{{"latest", "1.0.0"}},
+		newestFirst: false,
+		info: map[string]TagInfo{
+			"latest": linuxTag("latest", "amd64"),
+			"1.0.0":  linuxTag("1.0.0", "amd64"),
+		},
+	}
+
+	got, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`^latest$`), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Tag != "latest" {
+		t.Errorf("tag = %s, want latest", got.Tag)
+	}
+}
+
+// TestResolveHonoursExplicitNonVersionTag: naming a tag also waives the
+// version-like requirement, since the user was not asking "which is newest".
+func TestResolveHonoursExplicitNonVersionTag(t *testing.T) {
+	reg := &fakeRegistry{
+		pages:       [][]string{{"nonroot", "debug"}},
+		newestFirst: false,
+		info:        map[string]TagInfo{"nonroot": linuxTag("nonroot", "amd64")},
+	}
+
+	got, err := resolve(context.Background(), reg, "distroless/base", regexp.MustCompile(`^nonroot$`), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Tag != "nonroot" {
+		t.Errorf("tag = %s, want nonroot", got.Tag)
+	}
+}
+
+// TestResolveReportsExcludedTags: when a general filter matched only excluded
+// tags, say so instead of claiming nothing was found.
+func TestResolveReportsExcludedTags(t *testing.T) {
+	reg := &fakeRegistry{
+		pages:       [][]string{{"1.0.0-rc1", "1.0.0-rc2"}},
+		newestFirst: false,
+		info:        map[string]TagInfo{},
+	}
+
+	_, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`-rc\d$`), "amd64", "linux")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, ErrNoMatch) {
+		t.Error(`this is not "not found": the tags matched and were then excluded`)
+	}
+	for _, want := range []string{"excluded", "1.0.0-rc1", "name the tag exactly"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, should contain %q", err, want)
+		}
+	}
+}
+
 func TestResolveNoMatch(t *testing.T) {
 	reg := &fakeRegistry{
 		pages:       [][]string{{"1.0.0"}},

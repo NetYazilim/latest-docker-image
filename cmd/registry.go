@@ -108,6 +108,23 @@ const (
 // version shapes there is.
 var versionRe = regexp.MustCompile(`^v?\d+(\.\d+)*([-+].*)?$`)
 
+// namesOneTag reports whether the filter picks out a single tag by name, in
+// which case the user has said which tag they want and the exclusion rules step
+// aside: `ldi gcr.io/distroless/base:latest` used to answer "not found" for a
+// tag that plainly exists, because latest is on the exclusion list.
+//
+// A complete literal is the test - "latest", "^latest$", "^1\.2\.3$" - so every
+// pattern that actually selects among tags keeps the rules. Note that an empty
+// pattern also reports complete, which is the opposite of an explicit request,
+// so it is rejected first.
+func namesOneTag(filter *regexp.Regexp) bool {
+	if filter.String() == "" {
+		return false
+	}
+	_, complete := filter.LiteralPrefix()
+	return complete
+}
+
 // isVersionLike reports whether a tag reads as a version rather than as a build
 // identifier.
 //
@@ -174,15 +191,21 @@ var excludeRe = regexp.MustCompile(
 func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Regexp, arch, osName string) (TagInfo, error) {
 	pager := reg.Tags(repo)
 
+	// A filter naming one tag outright is a request for that tag, not a query
+	// to be second-guessed.
+	explicit := namesOneTag(filter)
+
 	var (
 		matches    []TagInfo
 		candidates []string
 
-		// Remembered for the ErrNoVersion message: what the tags in this
-		// repository actually look like, and whether any of them was a version
-		// at all.
+		// Remembered for the failure messages: what the tags of this repository
+		// look like, whether any was a version at all, and what the exclusion
+		// rules threw away.
 		notAVersion string
 		sawAVersion bool
+		excluded    int
+		excludedEg  string
 	)
 
 	for {
@@ -196,16 +219,27 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 
 		page := make([]string, 0, len(names))
 		for _, name := range names {
-			if !filter.MatchString(name) || excludeRe.MatchString(name) {
+			if !filter.MatchString(name) {
 				continue
 			}
-			if !isVersionLike(name) {
-				if notAVersion == "" {
-					notAVersion = name
+
+			if !explicit {
+				if excludeRe.MatchString(name) {
+					excluded++
+					if excludedEg == "" {
+						excludedEg = name
+					}
+					continue
 				}
-				continue
+				if !isVersionLike(name) {
+					if notAVersion == "" {
+						notAVersion = name
+					}
+					continue
+				}
+				sawAVersion = true
 			}
-			sawAVersion = true
+
 			page = append(page, name)
 		}
 
@@ -252,10 +286,18 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 	}
 
 	if len(matches) == 0 {
-		if !sawAVersion && notAVersion != "" {
+		switch {
+		case !sawAVersion && notAVersion != "":
 			return TagInfo{}, fmt.Errorf(
 				"%w: the tags of %s look like %q; add a tag filter to pick one",
 				ErrNoVersion, repo, notAVersion)
+
+		case excluded > 0:
+			// Reported rather than swallowed as "not found": the tags are
+			// there, they were just ruled out.
+			return TagInfo{}, fmt.Errorf(
+				"%d tag(s) of %s matched but are excluded as pre-release or floating, such as %q; name the tag exactly to select it",
+				excluded, repo, excludedEg)
 		}
 		return TagInfo{}, ErrNoMatch
 	}

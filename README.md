@@ -83,5 +83,17 @@ rest of it from stdin, and an `ldi` failure is skipped rather than turned into a
   works. Where a registry cannot supply a date cheaply the tag line reports the
   manifest digest instead of an update time - a multi-architecture index
   carries no date at all.
+- **A tag has to look like a version to win.** Dot-separated numbers, with an
+  optional `v` and an optional suffix, qualify; a single number may be at most
+  four digits, so `node:22` is a version while `20250101` and the epoch stamps
+  Red Hat publishes beside `9.8` are build identifiers. When nothing matching
+  the filter looks like a version - a repository tagged by commit hash, such as
+  `gcr.io/distroless/base` - ldi says so rather than returning whichever tag the
+  registry listed first.
+- **Naming one tag overrides all of that.** A filter that is a plain literal
+  (`latest`, `^latest$`, `^nonroot$`) is read as "I want this tag": the
+  exclusions and the version rule step aside, so
+  `ldi gcr.io/distroless/base:latest` reports that tag and its digest. Anything
+  that selects among tags keeps the rules.
 - When no matching tag is found, ldi writes **nothing** to stdout and exits with
   code 1, so `docker pull $(ldi ...)` will not run with a bogus argument.
