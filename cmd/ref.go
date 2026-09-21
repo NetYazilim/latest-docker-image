@@ -23,6 +23,17 @@ type Reference struct {
 	Digest string
 }
 
+// Name, referansın çekilebilir tam adını döndürür: host verildiyse
+// "host/yol", verilmediyse yolun kendisi. ldi'nin stdout'a yazdığı ad bu
+// olmalı, yoksa `docker pull $(ldi registry.redhat.io/ubi9/ubi)` host'u
+// kaybedip yanlış imajı arar.
+func (r Reference) Name() string {
+	if r.Host == "" {
+		return r.Repo
+	}
+	return r.Host + "/" + r.Repo
+}
+
 // ParseReference, referansı parçalarına ayırır.
 //
 // Tag ayırıcısı "son / işaretinden sonraki son :" olarak bulunur; böylece

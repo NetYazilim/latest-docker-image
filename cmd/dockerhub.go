@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"regexp/syntax"
 	"strings"
-	"time"
 )
 
 // hubTag, hub.docker.com/v2/.../tags yanıtındaki tek kayıt.
@@ -30,9 +29,6 @@ type hubResponse struct {
 	Next    string   `json:"next"`
 	Results []hubTag `json:"results"`
 }
-
-// httpClient, varsayılan client'ın timeout'suz olmasını önler.
-var httpClient = &http.Client{Timeout: 20 * time.Second}
 
 // hubBaseURL, Docker Hub API'sinin kökü. Testler bunu kendi sunucularına
 // yöneltebilmek için dockerHub.baseURL alanını değiştirir.

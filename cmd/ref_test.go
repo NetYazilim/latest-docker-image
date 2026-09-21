@@ -57,6 +57,32 @@ func TestParseReference(t *testing.T) {
 	}
 }
 
+func TestReferenceName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		// Host'suz referansta çıktı aynen korunur.
+		{"traefik", "traefik"},
+		{"grafana/grafana-oss", "grafana/grafana-oss"},
+		// Host verildiyse çıktı host'u taşımalı, yoksa docker pull yanlış
+		// imajı arar.
+		{"registry.redhat.io/ubi9/ubi", "registry.redhat.io/ubi9/ubi"},
+		{`quay.io/prometheus/node-exporter:^v(\d+)\.(\d+)\.(\d+)$`, "quay.io/prometheus/node-exporter"},
+		{"localhost:5000/myimg", "localhost:5000/myimg"},
+	}
+
+	for _, tc := range tests {
+		ref, err := ParseReference(tc.in)
+		if err != nil {
+			t.Fatalf("%q: beklenmeyen hata: %v", tc.in, err)
+		}
+		if got := ref.Name(); got != tc.want {
+			t.Errorf("ParseReference(%q).Name() = %q, beklenen %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestParseReferenceErrors(t *testing.T) {
 	// Bunların hepsi eskiden sessizce yanlış bir URL üretip "Bulunamadı"
 	// sonucuna düşüyordu.

@@ -3,12 +3,18 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/semver"
 )
+
+// httpClient, varsayılan client'ın timeout'suz olmasını önler. Sürücüler
+// bağlantıyı yeniden kullanabilmek için aynı client'ı paylaşır.
+var httpClient = &http.Client{Timeout: 20 * time.Second}
 
 // Platform, bir imajın yayınlandığı işletim sistemi/mimari çifti.
 type Platform struct {
@@ -30,8 +36,13 @@ type TagInfo struct {
 	AnyPlatform bool
 
 	// LastUpdated, sürücünün verdiği ham zaman damgası. Her registry bu bilgiyi
-	// ucuza veremez, dolayısıyla boş olabilir.
+	// ucuza veremez, dolayısıyla boş olabilir: OCI Distribution'da çok mimarili
+	// bir index için hiç gelmez.
 	LastUpdated string
+
+	// Digest, tag'in işaret ettiği manifest digest'i. Tarih yoksa çıktıda onun
+	// yerine bu gösterilir; güncelleme kontrolü için de doğru alan budur.
+	Digest string
 }
 
 // TagPager, bir reponun tag isimlerini sayfa sayfa okur.
