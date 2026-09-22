@@ -88,8 +88,8 @@ or the tree is dirty (`v1.7.0`, `v1.7.0-3-gabc1234-dirty`). A plain
   list has to be read in full, because lexical order says nothing about which
   tag is newest, and the tag filter does not change that: `public.ecr.aws`
   reads 8825 tags in about 29 seconds whether 60 or 584 of them are candidates,
-  while `gcr.io` answers 49223 tags in 4.5 seconds and Docker Hub finishes in
-  under half a second. `-verbose` reports the numbers.
+  while `gcr.io` answers 49223 tags in 4.5 seconds and Docker Hub answers a
+  page in about half a second. `-verbose` reports the numbers.
 
   `public.ecr.aws` has an API of its own behind the gallery web site, and it
   is not the way out: it answers anonymously and carries dates and digests,
@@ -132,6 +132,20 @@ or the tree is dirty (`v1.7.0`, `v1.7.0-3-gabc1234-dirty`). A plain
   the filter looks like a version - a repository tagged by commit hash, such as
   `gcr.io/distroless/base` - ldi says so rather than returning whichever tag the
   registry listed first.
+- **Newest first is not highest first.** Docker Hub and the Red Hat catalogue
+  return tags in date order, so a patch published today to an older release
+  line sits ahead of a newer major released months ago. The page that first
+  matched is therefore no proof that nothing better lies behind it:
+  `grafana/grafana-oss` answers 13.0.2 from a page of a hundred tags in which
+  ninety-odd more recent entries belong to older lines - one busy week more and
+  the answer would have fallen off that page. ldi keeps reading while each page
+  improves on the best version so far and stops at the first page that does
+  not, which costs one extra request in the ordinary case. That bounds the
+  damage without removing it: a release line that has been quiet for several
+  pages can still be missed, so pin the major in the filter (`'^18\.'`) when
+  the answer has to be certain. Registries spoken to over Distribution are
+  unaffected - there the whole list is read before anything is sorted.
+
 - **Naming one tag overrides all of that.** A filter that is a plain literal
   (`latest`, `^latest$`, `^nonroot$`) is read as "I want this tag": the
   exclusions and the version rule step aside, so

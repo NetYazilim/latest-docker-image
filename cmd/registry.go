@@ -110,6 +110,13 @@ const (
 	// maxBareDigits is the longest a dotted-free numeric tag may be and still
 	// count as a version. See isVersionLike.
 	maxBareDigits = 4
+
+	// maxOrderedPages bounds the extra pages read when a registry's date
+	// order disagrees with version order. Every page has to improve on the
+	// best version so far to earn the next one, so this is only reached by a
+	// repository whose versions keep climbing as the dates fall - which does
+	// not last long. It is insurance, not a working limit.
+	maxOrderedPages = 10
 )
 
 // versionRe matches dot-separated numeric segments, optionally v-prefixed and
@@ -280,6 +287,7 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 			continue
 		}
 
+		var found []TagInfo
 		for _, name := range page {
 			st.Lookups++
 			info, err := reg.Inspect(ctx, repo, name)
@@ -287,10 +295,43 @@ func resolve(ctx context.Context, reg Registry, repo string, filter *regexp.Rege
 				return TagInfo{}, st, err
 			}
 			if platformMatches(info, arch, osName) {
-				matches = append(matches, info)
+				found = append(found, info)
 			}
 		}
-		if len(matches) > 0 {
+		if len(found) == 0 {
+			continue
+		}
+
+		previous := bestTag(matches)
+		matches = append(matches, found...)
+		best := bestTag(matches)
+
+		// An exact name matches at most one tag, so the first page that
+		// carries it has the answer.
+		if explicit {
+			break
+		}
+
+		// These pages are ordered by date and the question is about
+		// versions, so the page that first matched is not evidence that
+		// nothing better lies behind it. grafana/grafana-oss is the case
+		// that showed it: of the hundred most recently updated tags the
+		// winning 13.0.2 was three months old, and ninety-odd newer
+		// entries were patches to older release lines. One more page of
+		// that and the answer would have fallen out of the window.
+		//
+		// Reading one page further is the price; it is a request on Docker
+		// Hub and on the Red Hat catalogue, and nothing on an unordered
+		// registry, which collects everything anyway. A page has to
+		// improve on the best version seen to earn the next one.
+		//
+		// This is a bound on the damage, not a guarantee: a release line
+		// that has been quiet for several pages can still be missed.
+		// Pinning the major in the filter is what makes the answer certain.
+		if previous != "" && best == previous {
+			break
+		}
+		if st.Pages >= maxOrderedPages {
 			break
 		}
 	}
@@ -370,6 +411,18 @@ func sortTags(tags []TagInfo) {
 		}
 		return -strings.Compare(a.LastUpdated, b.LastUpdated)
 	})
+}
+
+// bestTag is the tag that would win among these matches, without disturbing
+// the order they were found in - that order is the registry's, and the caller
+// still needs it to tell newest-by-date from highest-by-version.
+func bestTag(matches []TagInfo) string {
+	if len(matches) == 0 {
+		return ""
+	}
+	sorted := slices.Clone(matches)
+	sortTags(sorted)
+	return sorted[0].Tag
 }
 
 // sortTagNames is sortTags over bare names, for ordering candidates before any
