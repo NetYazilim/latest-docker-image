@@ -90,6 +90,12 @@ or the tree is dirty (`v1.7.0`, `v1.7.0-3-gabc1234-dirty`). A plain
   reads 8825 tags in about 29 seconds whether 60 or 584 of them are candidates,
   while `gcr.io` answers 49223 tags in 4.5 seconds and Docker Hub finishes in
   under half a second. `-verbose` reports the numbers.
+
+  `public.ecr.aws` has an API of its own behind the gallery web site, and it
+  is not the way out: it answers anonymously and carries dates and digests,
+  but it costs 5.6 ms per tag against the registry's 3.3 ms, pages at most a
+  thousand names at a time and sorts by nothing, so the same repository takes
+  about fifty seconds there rather than thirty. Measured, not assumed.
 - Pre-release and floating tags are always skipped: `alpha`, `beta`, `rc`,
   `pre`, `preview`, `dev`, `snapshot`, `nightly`, `canary`, `edge` (as a
   `-`/`.`/`_` separated part of the tag) and `latest`. Tags ending in
