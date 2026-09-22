@@ -22,7 +22,7 @@ TAG filter options:
  ldi grafana/grafana-oss:'(\d+)\.(\d+)\.(\d+)$'
  ldi portainer/portainer-ee:'(\d+)\.(\d+)\.(\d+)-alpine$'
 
-# other registries, over OCI Distribution
+# other registries
  ldi registry.access.redhat.com/ubi9/ubi:'^9\.[0-9]+$'
  ldi quay.io/prometheus/node-exporter:'^v(\d+)\.(\d+)\.(\d+)$'
 
@@ -98,12 +98,22 @@ or the tree is dirty (`v1.7.0`, `v1.7.0-3-gabc1234-dirty`). A plain
   `.sig`, `.att` and `.sbom` tags, which cosign writes beside every image it
   signs - on `gcr.io/distroless/base` they are almost the entire tag list.
 - **Registries.** A bare name, or a `docker.io/...` reference, goes to Docker
-  Hub's own API, which answers with tag, platform and date in a single call. Any
-  other host is spoken to over OCI Distribution: `registry.access.redhat.com`,
-  `quay.io`, `ghcr.io`, Harbor and so on. Only anonymous access is supported so
-  far, so a registry that requires a login (`registry.redhat.io`) says exactly
+  Hub's own API, which answers with tag, platform and date in a single call.
+  `registry.access.redhat.com` goes to Red Hat's container catalogue for the
+  same reason. Every other host is spoken to over OCI Distribution: `quay.io`,
+  `ghcr.io`, `mcr.microsoft.com`, `gcr.io`, `public.ecr.aws`, Harbor and so on.
+  Only anonymous access is supported so far, so a registry that requires a login
+  (`registry.redhat.io`, which the catalogue does not index either) says exactly
   that instead of returning a tag. An `@sha256:...` digest is parsed but
   rejected.
+
+- **Red Hat goes through its catalogue, not its registry.**
+  `registry.access.redhat.com` caps a page of tag names at 100 and carries no
+  dates, so `ubi9/ubi` costs 34 sequential requests over Distribution. The
+  catalogue behind `catalog.redhat.com` answers architecture, build date, digest
+  and tag names in one sorted request, narrowed server-side to the architecture
+  asked for, which also means no manifest lookup per candidate. Measured on the
+  same host: `ubi9/ubi` 9.4s to 2.5s, `ubi8/ubi` 6.9s to 1.3s, same answers.
 - The name written to stdout always carries the host, so
   `docker pull $(ldi quay.io/prometheus/node-exporter:'^v(\d+)\.(\d+)\.(\d+)$')`
   works. Where a registry cannot supply a date cheaply the tag line reports the
