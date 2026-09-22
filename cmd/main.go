@@ -130,6 +130,13 @@ func run(ctx context.Context, cmd *cli.Command) error {
 // tag, platform and date in one call, while the same information would cost two
 // extra requests per tag and count against Hub's pull limit.
 func pickRegistry(ref Reference) Registry {
+	// Red Hat's catalogue answers with architecture, date and digest in one
+	// request and can sort by build date, which the registry itself cannot do
+	// at all. See redhat.go for the measurements.
+	if ref.Host == redHatHost {
+		return newRedHat(cfg.Architecture)
+	}
+
 	if ref.Host != "" && !isDockerHub(ref.Host) {
 		return newDistribution(ref.Host)
 	}

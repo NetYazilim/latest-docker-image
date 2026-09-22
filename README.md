@@ -22,7 +22,7 @@ TAG filter options:
  ldi grafana/grafana-oss:'(\d+)\.(\d+)\.(\d+)$'
  ldi portainer/portainer-ee:'(\d+)\.(\d+)\.(\d+)-alpine$'
 
-# other registries, over OCI Distribution
+# other registries
  ldi registry.access.redhat.com/ubi9/ubi:'^9\.[0-9]+$'
  ldi quay.io/prometheus/node-exporter:'^v(\d+)\.(\d+)\.(\d+)$'
 
@@ -88,8 +88,14 @@ or the tree is dirty (`v1.7.0`, `v1.7.0-3-gabc1234-dirty`). A plain
   list has to be read in full, because lexical order says nothing about which
   tag is newest, and the tag filter does not change that: `public.ecr.aws`
   reads 8825 tags in about 29 seconds whether 60 or 584 of them are candidates,
-  while `gcr.io` answers 49223 tags in 4.5 seconds and Docker Hub finishes in
-  under half a second. `-verbose` reports the numbers.
+  while `gcr.io` answers 49223 tags in 4.5 seconds and Docker Hub answers a
+  page in about half a second. `-verbose` reports the numbers.
+
+  `public.ecr.aws` has an API of its own behind the gallery web site, and it
+  is not the way out: it answers anonymously and carries dates and digests,
+  but it costs 5.6 ms per tag against the registry's 3.3 ms, pages at most a
+  thousand names at a time and sorts by nothing, so the same repository takes
+  about fifty seconds there rather than thirty. Measured, not assumed.
 - Pre-release and floating tags are always skipped: `alpha`, `beta`, `rc`,
   `pre`, `preview`, `dev`, `snapshot`, `nightly`, `canary`, `edge` (as a
   `-`/`.`/`_` separated part of the tag) and `latest`. Tags ending in
@@ -98,12 +104,22 @@ or the tree is dirty (`v1.7.0`, `v1.7.0-3-gabc1234-dirty`). A plain
   `.sig`, `.att` and `.sbom` tags, which cosign writes beside every image it
   signs - on `gcr.io/distroless/base` they are almost the entire tag list.
 - **Registries.** A bare name, or a `docker.io/...` reference, goes to Docker
-  Hub's own API, which answers with tag, platform and date in a single call. Any
-  other host is spoken to over OCI Distribution: `registry.access.redhat.com`,
-  `quay.io`, `ghcr.io`, Harbor and so on. Only anonymous access is supported so
-  far, so a registry that requires a login (`registry.redhat.io`) says exactly
+  Hub's own API, which answers with tag, platform and date in a single call.
+  `registry.access.redhat.com` goes to Red Hat's container catalogue for the
+  same reason. Every other host is spoken to over OCI Distribution: `quay.io`,
+  `ghcr.io`, `mcr.microsoft.com`, `gcr.io`, `public.ecr.aws`, Harbor and so on.
+  Only anonymous access is supported so far, so a registry that requires a login
+  (`registry.redhat.io`, which the catalogue does not index either) says exactly
   that instead of returning a tag. An `@sha256:...` digest is parsed but
   rejected.
+
+- **Red Hat goes through its catalogue, not its registry.**
+  `registry.access.redhat.com` caps a page of tag names at 100 and carries no
+  dates, so `ubi9/ubi` costs 34 sequential requests over Distribution. The
+  catalogue behind `catalog.redhat.com` answers architecture, build date, digest
+  and tag names in one sorted request, narrowed server-side to the architecture
+  asked for, which also means no manifest lookup per candidate. Measured on the
+  same host: `ubi9/ubi` 9.4s to 2.5s, `ubi8/ubi` 6.9s to 1.3s, same answers.
 - The name written to stdout always carries the host, so
   `docker pull $(ldi quay.io/prometheus/node-exporter:'^v(\d+)\.(\d+)\.(\d+)$')`
   works. Where a registry cannot supply a date cheaply the tag line reports the
@@ -116,6 +132,20 @@ or the tree is dirty (`v1.7.0`, `v1.7.0-3-gabc1234-dirty`). A plain
   the filter looks like a version - a repository tagged by commit hash, such as
   `gcr.io/distroless/base` - ldi says so rather than returning whichever tag the
   registry listed first.
+- **Newest first is not highest first.** Docker Hub and the Red Hat catalogue
+  return tags in date order, so a patch published today to an older release
+  line sits ahead of a newer major released months ago. The page that first
+  matched is therefore no proof that nothing better lies behind it:
+  `grafana/grafana-oss` answers 13.0.2 from a page of a hundred tags in which
+  ninety-odd more recent entries belong to older lines - one busy week more and
+  the answer would have fallen off that page. ldi keeps reading while each page
+  improves on the best version so far and stops at the first page that does
+  not, which costs one extra request in the ordinary case. That bounds the
+  damage without removing it: a release line that has been quiet for several
+  pages can still be missed, so pin the major in the filter (`'^18\.'`) when
+  the answer has to be certain. Registries spoken to over Distribution are
+  unaffected - there the whole list is read before anything is sorted.
+
 - **Naming one tag overrides all of that.** A filter that is a plain literal
   (`latest`, `^latest$`, `^nonroot$`) is read as "I want this tag": the
   exclusions and the version rule step aside, so

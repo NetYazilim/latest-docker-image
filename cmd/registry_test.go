@@ -256,24 +256,27 @@ func TestResolveMatchesRequestedArch(t *testing.T) {
 	}
 }
 
-func TestResolveStopsPagingWhenNewestFirst(t *testing.T) {
+func TestResolveReadsOnPastTheFirstMatch(t *testing.T) {
 	pages := [][]string{{"1.0.0"}, {"9.9.9"}}
 	info := map[string]TagInfo{
 		"1.0.0": linuxTag("1.0.0", "amd64"),
 		"9.9.9": linuxTag("9.9.9", "amd64"),
 	}
 
-	// When pages arrive newest-first, paging stops at the first match.
+	// Newest-first pages are ordered by date, not by version, so the page
+	// that matched is not the end of it: the walk goes on while each page
+	// improves on the best version so far. This used to stop at the first
+	// match and answer 1.0.0, which is the defect the rule was added for.
 	first := &fakeRegistry{pages: pages, info: info, newestFirst: true}
 	got, _, err := resolve(context.Background(), first, "x/y", regexp.MustCompile(`.*`), "amd64", "linux")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Tag != "1.0.0" {
-		t.Errorf("tag = %s, want 1.0.0", got.Tag)
+	if got.Tag != "9.9.9" {
+		t.Errorf("tag = %s, want 9.9.9", got.Tag)
 	}
-	if first.pagesRead != 1 {
-		t.Errorf("pages read = %d, want 1", first.pagesRead)
+	if first.pagesRead != 2 {
+		t.Errorf("pages read = %d, want 2", first.pagesRead)
 	}
 
 	// Without an ordering guarantee (OCI Distribution) every page is scanned.
@@ -661,5 +664,137 @@ func TestResolveNoMatch(t *testing.T) {
 	_, _, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`^yok$`), "amd64", "linux")
 	if !errors.Is(err, ErrNoMatch) {
 		t.Errorf("error = %v, want ErrNoMatch", err)
+	}
+}
+
+// datedTag builds a single-platform record carrying a date, so the ordered
+// path can be given a page whose date order disagrees with version order.
+func datedTag(tag, when string) TagInfo {
+	return TagInfo{
+		Tag:         tag,
+		Platforms:   []Platform{{Arch: "amd64", OS: "linux"}},
+		LastUpdated: when,
+	}
+}
+
+// A page that does not improve on the best version so far ends the walk.
+func TestOrderedStopsAtThePageThatDoesNotImprove(t *testing.T) {
+	reg := &fakeRegistry{
+		pages: [][]string{
+			{"18.6", "17.9", "16.13"},
+			{"15.17", "14.22"},
+		},
+		newestFirst: true,
+		info: map[string]TagInfo{
+			"18.6":  datedTag("18.6", "2026-09-19T07:10:36Z"),
+			"17.9":  datedTag("17.9", "2026-09-18T00:00:00Z"),
+			"16.13": datedTag("16.13", "2026-09-17T00:00:00Z"),
+			"15.17": datedTag("15.17", "2026-01-01T00:00:00Z"),
+			"14.22": datedTag("14.22", "2025-12-01T00:00:00Z"),
+		},
+	}
+
+	got, st, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(``), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Tag != "18.6" {
+		t.Errorf("tag = %q, want 18.6", got.Tag)
+	}
+	if st.Pages != 2 {
+		t.Errorf("read %d pages, want 2: one to answer, one to check", st.Pages)
+	}
+}
+
+// grafana/grafana-oss: the page is ordered by date, and the winning version is
+// not the most recently updated tag on it. That is the signal that the
+// repository patches older release lines after newer ones, so one more page is
+// read - and, finding nothing better, the walk stops there.
+func TestOrderedReadsOnWhenTheFirstPageDisagrees(t *testing.T) {
+	reg := &fakeRegistry{
+		pages: [][]string{
+			{"12.4.1", "13.0.2", "12.4.0"},
+			{"11.9.3", "11.9.2"},
+			{"10.1.0"},
+		},
+		newestFirst: true,
+		info: map[string]TagInfo{
+			"12.4.1": datedTag("12.4.1", "2026-09-20T00:00:00Z"),
+			"13.0.2": datedTag("13.0.2", "2026-06-02T13:30:00Z"),
+			"12.4.0": datedTag("12.4.0", "2026-05-01T00:00:00Z"),
+			"11.9.3": datedTag("11.9.3", "2026-04-01T00:00:00Z"),
+			"11.9.2": datedTag("11.9.2", "2026-03-01T00:00:00Z"),
+			"10.1.0": datedTag("10.1.0", "2026-01-01T00:00:00Z"),
+		},
+	}
+
+	got, st, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(``), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Tag != "13.0.2" {
+		t.Errorf("tag = %q, want 13.0.2", got.Tag)
+	}
+	if st.Pages != 2 {
+		t.Errorf("read %d pages, want 2: the second did not improve", st.Pages)
+	}
+}
+
+// The case the rule exists for: the highest version has already fallen off the
+// first page, pushed out by newer patches to an older release line. Stopping at
+// the first page that matched would have answered 12.4.1.
+func TestOrderedFindsAVersionPastTheFirstPage(t *testing.T) {
+	reg := &fakeRegistry{
+		pages: [][]string{
+			{"12.4.1", "12.4.0"},
+			{"13.0.2", "12.3.9"},
+			{"11.9.3"},
+		},
+		newestFirst: true,
+		info: map[string]TagInfo{
+			"12.4.1": datedTag("12.4.1", "2026-09-20T00:00:00Z"),
+			"12.4.0": datedTag("12.4.0", "2026-09-01T00:00:00Z"),
+			"13.0.2": datedTag("13.0.2", "2026-06-02T13:30:00Z"),
+			"12.3.9": datedTag("12.3.9", "2026-05-01T00:00:00Z"),
+			"11.9.3": datedTag("11.9.3", "2026-04-01T00:00:00Z"),
+		},
+	}
+
+	got, st, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(``), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Tag != "13.0.2" {
+		t.Errorf("tag = %q, want 13.0.2 from the second page", got.Tag)
+	}
+	if st.Pages != 3 {
+		t.Errorf("read %d pages, want 3: page 2 improved, page 3 did not", st.Pages)
+	}
+}
+
+// Naming one tag outright still costs a single page: the page carries only
+// that tag, so it is trivially both the newest and the highest.
+func TestOrderedNamedTagStillReadsOnePage(t *testing.T) {
+	reg := &fakeRegistry{
+		pages: [][]string{
+			{"latest"},
+			{"1.0.0"},
+		},
+		newestFirst: true,
+		info: map[string]TagInfo{
+			"latest": datedTag("latest", "2026-09-20T00:00:00Z"),
+			"1.0.0":  datedTag("1.0.0", "2026-09-19T00:00:00Z"),
+		},
+	}
+
+	got, st, err := resolve(context.Background(), reg, "x/y", regexp.MustCompile(`latest`), "amd64", "linux")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Tag != "latest" {
+		t.Errorf("tag = %q, want latest", got.Tag)
+	}
+	if st.Pages != 1 {
+		t.Errorf("read %d pages, want 1", st.Pages)
 	}
 }
